@@ -1,0 +1,49 @@
+.markdown-body { color: var(--text, #303630); font-family: "Segoe UI", "Microsoft YaHei", sans-serif; font-size: var(--reading-size, 16px); line-height: 1.95; overflow-wrap: anywhere; }
+.markdown-body .preview-block { display: flow-root; }
+.markdown-body .qj-math { color: var(--text, #303630); }
+.markdown-body .qj-math:not(.qj-rendered) { font-family: Consolas, monospace; font-size: .9em; }
+.markdown-body .qj-math-block { overflow-x: auto; overflow-y: hidden; margin: 9px 0 22px; padding: 8px 2px; }
+.markdown-body .qj-math .katex { font-size: 1.13em; }
+.markdown-body .qj-math .katex-display { margin: .4em 0; }
+.markdown-body .qj-diagram { margin: 8px 0 22px; padding: 16px; border: 1px solid var(--border, #e6e8e0); border-radius: 7px; overflow-x: auto; text-align: center; }
+.markdown-body .qj-diagram pre { text-align: left; margin: 0; }
+.markdown-body .qj-diagram-image { display: block; margin: 0 auto; max-width: 100%; max-height: none; border-radius: 0; }
+.markdown-body .qj-render-error { color: #aa7153; white-space: normal; overflow-wrap: anywhere; }
+.markdown-body .qj-error-label { display: block; font: 11px "Segoe UI", "Microsoft YaHei", sans-serif; color: #aa7153; margin-bottom: 6px; }
+.markdown-body .qj-render-error code { display: inline; white-space: pre-wrap; color: inherit; background: transparent; border: 0; padding: 0; }
+.markdown-body h1, .markdown-body h2, .markdown-body h3, .markdown-body h4, .markdown-body h5, .markdown-body h6 { color: var(--text, #303630); font-weight: 600; line-height: 1.5; letter-spacing: -.3px; scroll-margin-top: 20px; }
+.markdown-body h1 { font-family: Georgia, "Noto Serif SC", "Source Han Serif SC", "SimSun", serif; font-size: 2em; letter-spacing: 1px; font-weight: 600; margin: 0 0 24px; }
+.markdown-body h2 { font-size: 1.28em; margin: 32px 0 14px; padding-bottom: 11px; border-bottom: 1px solid var(--border, #e6e8e0); }
+.markdown-body h3 { font-size: 1.08em; margin: 26px 0 12px; }
+.markdown-body h4, .markdown-body h5, .markdown-body h6 { font-size: 1em; margin: 20px 0 10px; }
+.markdown-body p { margin: 0 0 16px; }
+.markdown-body strong { font-weight: 650; }
+.markdown-body a { color: var(--accent, #376c55); text-decoration: underline; text-decoration-color: #376c5550; text-underline-offset: 3px; }
+.markdown-body a:hover { text-decoration-color: currentColor; }
+.markdown-body blockquote { margin: 8px 0 21px; border-left: 3px solid #a7bc9b; background: var(--accent-soft, #eff4ed); border-radius: 0 5px 5px 0; padding: 13px 18px; color: var(--muted, #74816d); font-size: .94em; }
+.markdown-body blockquote p:last-child { margin-bottom: 0; }
+.markdown-body ul, .markdown-body ol { padding-left: 24px; margin: 0 0 17px; }
+.markdown-body li { padding-left: 3px; margin: 5px 0; }
+.markdown-body li::marker { color: var(--accent, #376c55); }
+.markdown-body li > p { margin: 6px 0; }
+.markdown-body li:has(> input[type="checkbox"]) { list-style: none; margin-left: -21px; }
+.markdown-body input[type="checkbox"] { accent-color: var(--accent, #376c55); width: 13px; height: 13px; vertical-align: -1px; margin-right: 8px; cursor: pointer; }
+.markdown-body input[type="checkbox"]:disabled { cursor: default; }
+.markdown-body li:has(> input[type="checkbox"]:checked) { color: var(--muted, #858c82); text-decoration: line-through; text-decoration-color: var(--subtle, #a3a99e); }
+.markdown-body code { font-family: "Cascadia Code", Consolas, monospace; font-size: .86em; color: var(--accent, #376c55); background: var(--code-bg, #f5f6f1); padding: 3px 6px; border: 1px solid var(--border, #e6e8e0); border-radius: 4px; }
+.markdown-body pre { position: relative; background: var(--code-bg, #f5f6f1); border: 1px solid var(--border, #e6e8e0); border-radius: 7px; padding: 38px 19px 19px; margin: 3px 0 21px; overflow-x: auto; line-height: 1.85; }
+.markdown-body pre:before { content: attr(data-language); position: absolute; left: 19px; top: 10px; font-family: "Segoe UI", sans-serif; font-size: 10px; color: var(--muted, #858c82); letter-spacing: .4px; }
+.markdown-body pre code { display: block; color: var(--text, #303630); background: transparent; border: 0; padding: 0; font-size: .8em; white-space: pre; overflow-wrap: normal; }
+.markdown-body table { width: 100%; border-collapse: separate; border-spacing: 0; border: 1px solid var(--border, #e6e8e0); border-radius: 6px; margin: 5px 0 22px; font-size: .86em; overflow: hidden; }
+.markdown-body th { font-weight: 600; background: var(--code-bg, #f5f6f1); text-align: left; }
+.markdown-body th, .markdown-body td { padding: 9px 13px; border-bottom: 1px solid var(--border, #e6e8e0); }
+.markdown-body th + th, .markdown-body td + td { border-left: 1px solid var(--border, #e6e8e0); }
+.markdown-body tr:last-child td { border-bottom: 0; }
+.markdown-body hr { height: 1px; border: 0; background: var(--border, #e6e8e0); margin: 30px 0; }
+.markdown-body img { max-width: 100%; height: auto; border-radius: 5px; }
+.markdown-body del { color: var(--muted, #858c82); }
+.markdown-body .hljs-keyword, .markdown-body .hljs-selector-tag, .markdown-body .hljs-literal { color: #9d6b9d; }
+.markdown-body .hljs-string, .markdown-body .hljs-attr, .markdown-body .hljs-addition { color: #6e8b50; }
+.markdown-body .hljs-number, .markdown-body .hljs-symbol { color: #b48b4b; }
+.markdown-body .hljs-title, .markdown-body .hljs-built_in, .markdown-body .hljs-type { color: #517ca0; }
+.markdown-body .hljs-comment, .markdown-body .hljs-quote { color: #929b8b; font-style: italic; }

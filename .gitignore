@@ -1,0 +1,10 @@
+node_modules/
+.build/
+dist/
+releases/
+*.zip
+qa/
+.codex/
+.agents/
+.aws/
+*.zip.sha256
