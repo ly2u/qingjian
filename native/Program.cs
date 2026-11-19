@@ -17,7 +17,7 @@ using Microsoft.Web.WebView2.WinForms;
 
 [assembly: System.Reflection.AssemblyTitle("轻笺")]
 [assembly: System.Reflection.AssemblyDescription("轻量 Markdown 编辑器")]
-[assembly: System.Reflection.AssemblyVersion("0.2.0.0")]
+[assembly: System.Reflection.AssemblyVersion("0.3.2.0")]
 
 namespace Qingjian
 {
@@ -322,7 +322,7 @@ namespace Qingjian
                             try { opening.Add(ReadDocument(path)); }
                             catch (Exception error) { openErrors.Add(Path.GetFileName(path) + "：" + error.Message); }
                         }
-                        result = new { session = lastSession, recent = recent.ToArray(), workspace = workspace, version = "0.2.0", filesToOpen = opening, openErrors = openErrors };
+                        result = new { session = lastSession, recent = recent.ToArray(), workspace = workspace, version = "0.3.2", filesToOpen = opening, openErrors = openErrors };
                         startupFiles.Clear();
                         break;
                     case "persist": Persist(data); result = true; break;

@@ -78,7 +78,7 @@ export function createPreview(windowObject) {
     }]
   });
 
-  return function render(source) {
+  function render(source) {
     checkboxIndex = 0;
     formulas = []; diagrams = [];
     const tokens = parser.lexer(source);
@@ -139,5 +139,7 @@ export function createPreview(windowObject) {
     });
     fragment.querySelectorAll('img').forEach(img => { img.loading = 'lazy'; img.decoding = 'async'; });
     return { html: fragment.innerHTML, headings, formulas, diagrams };
-  };
+  }
+  render.tokenize = source => parser.lexer(source);
+  return render;
 }

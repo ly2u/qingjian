@@ -14,6 +14,7 @@ public sealed class MemoryRegistrationStore : IRegistrationStore
     public void RemoveValue(string key, string name) { if (Keys.ContainsKey(key)) Keys[key].Remove(name); }
     public void RemoveTree(string key) { foreach (string path in Keys.Keys.Where(path => path == key || path.StartsWith(key + "\\", StringComparison.OrdinalIgnoreCase)).ToArray()) Keys.Remove(path); }
     public void RemoveIfEmpty(string key) { if (Keys.ContainsKey(key) && Keys[key].Count == 0 && !Keys.Keys.Any(path => path.StartsWith(key + "\\", StringComparison.OrdinalIgnoreCase))) Keys.Remove(key); }
+    public string[] SubKeys(string key) { return Keys.Keys.Where(path => path.StartsWith(key + "\\", StringComparison.OrdinalIgnoreCase)).Select(path => path.Substring(key.Length + 1).Split('\\')[0]).Distinct(StringComparer.OrdinalIgnoreCase).ToArray(); }
 }
 
 public static class IntegrationTests
@@ -43,6 +44,38 @@ public static class IntegrationTests
         bool rejected = false;
         try { SystemIntegration.Unregister(store, Path.Combine(folder, "other", "轻笺.exe")); } catch (IOException) { rejected = true; }
         check(rejected && store.Get(SystemIntegration.Capabilities, "QingjianExecutable") != null, "another portable copy cannot unregister the current owner");
+        var upgrade = new MemoryRegistrationStore();
+        string oldExe = Path.Combine(folder, "v0.2.0", "旧版轻笺.exe");
+        string newExe = Path.Combine(folder, "v0.3.1", "轻笺.exe");
+        const string oldApp = @"Software\Classes\Applications\旧版轻笺.exe";
+        const string newApp = @"Software\Classes\Applications\轻笺.exe";
+        SystemIntegration.Register(upgrade, oldExe);
+        upgrade.Set(choice, "ProgId", @"Applications\旧版轻笺.exe", RegistryValueKind.String);
+        upgrade.Set(choice, "Hash", "windows-protected-hash", RegistryValueKind.String);
+        upgrade.Set(@"Software\Classes\Applications\OtherEditor.exe", "FriendlyAppName", "Other editor", RegistryValueKind.String);
+        SystemIntegration.Register(upgrade, newExe);
+        check(SystemIntegration.RegisteredExecutable(upgrade) == newExe, "new registration automatically replaces the old install path");
+        check((string)upgrade.Get(@"Software\Classes\Qingjian.Markdown\shell\open\command", "") == SystemIntegration.OpenCommand(newExe), "stable Markdown handler points to the new executable");
+        check((string)upgrade.Get(oldApp + @"\shell\open\command", "") == SystemIntegration.OpenCommand(newExe), "existing default application alias is redirected to the new version");
+        check((string)upgrade.Get(@"Software\Microsoft\Windows\CurrentVersion\App Paths\旧版轻笺.exe", "") == newExe, "legacy app-path entry is updated instead of left stale");
+        check(upgrade.Get(oldApp, "NoOpenWith") != null && upgrade.Get(newApp, "NoOpenWith") == null, "legacy aliases are hidden from duplicate open-with entries");
+        check((string)upgrade.Get(choice, "ProgId") == @"Applications\旧版轻笺.exe" && (string)upgrade.Get(choice, "Hash") == "windows-protected-hash", "upgrade retains the user's existing Windows default and its hash");
+        check((string)upgrade.Get(@"Software\Microsoft\Windows\CurrentVersion\Uninstall\Qingjian", "UninstallString") == "\"" + newExe + "\" --unregister", "the uninstall entry is migrated to the new version");
+        check(((string)upgrade.Get(oldApp + @"\DefaultIcon", "")).Contains(newExe), "legacy file icons use the current executable");
+        rejected = false;
+        try { SystemIntegration.Unregister(upgrade, oldExe); } catch (IOException) { rejected = true; }
+        check(rejected && SystemIntegration.RegisteredExecutable(upgrade) == newExe, "the old uninstaller cannot remove an upgraded registration");
+        SystemIntegration.Unregister(upgrade, newExe);
+        check(upgrade.Get(oldApp, "QingjianExecutable") == null && upgrade.Get(newApp, "QingjianExecutable") == null, "uninstalling the current registration cleans migrated aliases");
+        check((string)upgrade.Get(@"Software\Classes\Applications\OtherEditor.exe", "FriendlyAppName") == "Other editor", "migration and removal leave other applications untouched");
+        var partial = new MemoryRegistrationStore();
+        SystemIntegration.Register(partial, oldExe);
+        partial.RemoveTree(SystemIntegration.Capabilities);
+        partial.RemoveTree(@"Software\Classes\Qingjian.Markdown");
+        partial.RemoveTree(@"Software\Microsoft\Windows\CurrentVersion\Uninstall\Qingjian");
+        check(SystemIntegration.RegisteredExecutable(partial) == oldExe, "old installations are discovered even if their capability entry is missing");
+        SystemIntegration.Register(partial, newExe);
+        check((string)partial.Get(oldApp + @"\shell\open\command", "") == SystemIntegration.OpenCommand(newExe), "partial old registration can be repaired and upgraded directly");
         // Real IPC test uses an isolated test profile; it does not launch a window.
         using (var received = new AutoResetEvent(false))
         using (var first = new SingleInstance(Path.Combine(folder, Guid.NewGuid().ToString("N"))))

@@ -16,6 +16,7 @@ namespace Qingjian
         void RemoveValue(string key, string name);
         void RemoveTree(string key);
         void RemoveIfEmpty(string key);
+        string[] SubKeys(string key);
     }
 
     public sealed class UserRegistrationStore : IRegistrationStore
@@ -33,6 +34,8 @@ namespace Qingjian
             { if (entry == null || entry.ValueCount != 0 || entry.SubKeyCount != 0) return; }
             Registry.CurrentUser.DeleteSubKey(key, false);
         }
+        public string[] SubKeys(string key)
+        { using (var entry = Registry.CurrentUser.OpenSubKey(key)) return entry == null ? new string[0] : entry.GetSubKeyNames(); }
     }
 
     public static class SystemIntegration
@@ -41,6 +44,8 @@ namespace Qingjian
         public const string Capabilities = @"Software\Qingjian\Capabilities";
         const string RegisteredApps = @"Software\RegisteredApplications";
         const string UninstallKey = @"Software\Microsoft\Windows\CurrentVersion\Uninstall\Qingjian";
+        const string Applications = @"Software\Classes\Applications";
+        const string AppPaths = @"Software\Microsoft\Windows\CurrentVersion\App Paths";
         public static readonly string[] Extensions = { ".md", ".markdown", ".mdown" };
         [DllImport("shell32.dll")] static extern void SHChangeNotify(uint eventId, uint flags, IntPtr item1, IntPtr item2);
 
@@ -49,9 +54,36 @@ namespace Qingjian
         static string AppPathKey(string exe) { return @"Software\Microsoft\Windows\CurrentVersion\App Paths\" + Path.GetFileName(exe); }
         static void Set(IRegistrationStore store, string key, string name, string value) { store.Set(key, name, value, RegistryValueKind.String); }
 
+        static string[] OwnedAliases(IRegistrationStore store)
+        {
+            var names = new HashSet<string>(StringComparer.OrdinalIgnoreCase);
+            foreach (string root in new[] { Applications, AppPaths })
+                foreach (string name in store.SubKeys(root))
+                    if (!String.IsNullOrEmpty(Convert.ToString(store.Get(root + "\\" + name, "QingjianExecutable")))) names.Add(name);
+            return names.ToArray();
+        }
+
+        public static string RegisteredExecutable(IRegistrationStore store)
+        {
+            foreach (string key in new[] { Capabilities, @"Software\Classes\" + ProgId, UninstallKey })
+            {
+                string path = Convert.ToString(store.Get(key, "QingjianExecutable"));
+                if (!String.IsNullOrEmpty(path)) return path;
+            }
+            foreach (string name in OwnedAliases(store))
+                foreach (string root in new[] { Applications, AppPaths })
+                {
+                    string path = Convert.ToString(store.Get(root + "\\" + name, "QingjianExecutable"));
+                    if (!String.IsNullOrEmpty(path)) return path;
+                }
+            return "";
+        }
+
         public static void Register(IRegistrationStore store, string exe)
         {
             exe = Path.GetFullPath(exe);
+            var aliases = new HashSet<string>(OwnedAliases(store), StringComparer.OrdinalIgnoreCase);
+            aliases.Add(Path.GetFileName(exe));
             string command = OpenCommand(exe), icon = "\"" + exe + "\",0";
             string prog = @"Software\Classes\" + ProgId, app = AppKey(exe);
             Set(store, prog, "", "轻笺 Markdown 文档");
@@ -80,8 +112,22 @@ namespace Qingjian
             }
             Set(store, AppPathKey(exe), "", exe);
             Set(store, AppPathKey(exe), "QingjianExecutable", exe);
+            // Preserve old application aliases so existing Windows defaults keep working.
+            foreach (string name in aliases)
+            {
+                string alias = Applications + "\\" + name;
+                Set(store, alias, "FriendlyAppName", "轻笺");
+                Set(store, alias, "QingjianExecutable", exe);
+                Set(store, alias + @"\DefaultIcon", "", icon);
+                Set(store, alias + @"\shell\open\command", "", command);
+                foreach (string extension in Extensions) Set(store, alias + @"\SupportedTypes", extension, "");
+                if (String.Equals(name, Path.GetFileName(exe), StringComparison.OrdinalIgnoreCase)) store.RemoveValue(alias, "NoOpenWith");
+                else Set(store, alias, "NoOpenWith", "");
+                Set(store, AppPaths + "\\" + name, "", exe);
+                Set(store, AppPaths + "\\" + name, "QingjianExecutable", exe);
+            }
             Set(store, UninstallKey, "DisplayName", "轻笺（便携版系统注册）");
-            Set(store, UninstallKey, "DisplayVersion", "0.2.0");
+            Set(store, UninstallKey, "DisplayVersion", "0.3.2");
             Set(store, UninstallKey, "DisplayIcon", icon);
             Set(store, UninstallKey, "InstallLocation", Path.GetDirectoryName(exe));
             Set(store, UninstallKey, "UninstallString", "\"" + exe + "\" --unregister");
@@ -94,38 +140,45 @@ namespace Qingjian
         public static void Unregister(IRegistrationStore store, string exe)
         {
             exe = Path.GetFullPath(exe);
-            string owner = Convert.ToString(store.Get(Capabilities, "QingjianExecutable"));
+            string owner = RegisteredExecutable(store);
             if (!String.IsNullOrEmpty(owner) && !String.Equals(owner, exe, StringComparison.OrdinalIgnoreCase))
-                throw new IOException("当前注册来自另一位置：\n" + owner + "\n请使用那份程序移除，或先在这里重新注册。");
+                throw new IOException("当前注册已属于另一位置的轻笺：\n" + owner + "\n旧版本无需卸载注册。请在当前注册的版本中移除。");
+            var ownedKeys = new List<string> { @"Software\Classes\" + ProgId, AppKey(exe), AppPathKey(exe), UninstallKey, Capabilities };
+            foreach (string name in OwnedAliases(store)) { ownedKeys.Add(Applications + "\\" + name); ownedKeys.Add(AppPaths + "\\" + name); }
             foreach (string extension in Extensions)
             {
                 foreach (string key in new[] { @"Software\Classes\" + extension + @"\OpenWithProgids", @"Software\Microsoft\Windows\CurrentVersion\Explorer\FileExts\" + extension + @"\OpenWithProgids" })
                 { store.RemoveValue(key, ProgId); store.RemoveIfEmpty(key); }
             }
-            foreach (string key in new[] { @"Software\Classes\" + ProgId, AppKey(exe), AppPathKey(exe), UninstallKey, Capabilities })
+            foreach (string key in ownedKeys.Distinct(StringComparer.OrdinalIgnoreCase))
             {
-                if (String.Equals(Convert.ToString(store.Get(key, "QingjianExecutable")), exe, StringComparison.OrdinalIgnoreCase)) store.RemoveTree(key);
+                if (!String.IsNullOrEmpty(Convert.ToString(store.Get(key, "QingjianExecutable")))) store.RemoveTree(key);
             }
             if (String.Equals(Convert.ToString(store.Get(RegisteredApps, "Qingjian")), Capabilities, StringComparison.OrdinalIgnoreCase)) store.RemoveValue(RegisteredApps, "Qingjian");
             store.RemoveIfEmpty(@"Software\Qingjian");
         }
 
-        public static object Status(string exe)
+        public static Dictionary<string, object> Status(string exe)
         {
             var store = new UserRegistrationStore();
-            string owner = Convert.ToString(store.Get(Capabilities, "QingjianExecutable"));
-            return new { registered = !String.IsNullOrEmpty(owner), current = String.Equals(owner, Path.GetFullPath(exe), StringComparison.OrdinalIgnoreCase), executable = Path.GetFullPath(exe), registeredExecutable = owner };
+            string owner = RegisteredExecutable(store);
+            return new Dictionary<string, object> { { "registered", !String.IsNullOrEmpty(owner) }, { "current", String.Equals(owner, Path.GetFullPath(exe), StringComparison.OrdinalIgnoreCase) }, { "executable", Path.GetFullPath(exe) }, { "registeredExecutable", owner } };
         }
 
         public static object Handle(string action)
         {
             string exe = Application.ExecutablePath;
-            if (action == "register" || action == "defaults") Register(new UserRegistrationStore(), exe);
-            else if (action == "unregister") Unregister(new UserRegistrationStore(), exe);
+            var store = new UserRegistrationStore();
+            string previous = RegisteredExecutable(store);
+            if (action == "register" || action == "defaults") Register(store, exe);
+            else if (action == "unregister") Unregister(store, exe);
             else if (action != "status") throw new InvalidOperationException("不支持的系统集成操作。");
             if (action != "status") SHChangeNotify(0x08000000, 0, IntPtr.Zero, IntPtr.Zero);
             if (action == "defaults") Process.Start(new ProcessStartInfo("ms-settings:defaultapps?registeredAppUser=Qingjian") { UseShellExecute = true });
-            return Status(exe);
+            var status = Status(exe);
+            status["previousExecutable"] = previous;
+            status["replacedPrevious"] = (action == "register" || action == "defaults") && !String.IsNullOrEmpty(previous) && !String.Equals(previous, exe, StringComparison.OrdinalIgnoreCase);
+            return status;
         }
 
         public static bool RunCommand(string[] args)
@@ -135,8 +188,8 @@ namespace Qingjian
             bool quiet = args.Contains("--quiet");
             try
             {
-                Handle(command == "--register" ? "register" : "unregister");
-                if (!quiet) MessageBox.Show(command == "--register" ? "已将轻笺加入 Markdown 的打开方式。\n\n右键 .md 文件 → 打开方式 → 选择其他应用 → 轻笺，\n再选择“始终使用”。\n\n也可以从轻笺的“更多 → Windows 文件关联”打开默认应用设置。" : "已移除轻笺的系统注册。\n程序文件、文档、图片和草稿均保留。\n\n如果轻笺曾是默认应用，请为 .md 重新选择打开方式。", "轻笺", MessageBoxButtons.OK, MessageBoxIcon.Information);
+                var status = (Dictionary<string, object>)Handle(command == "--register" ? "register" : "unregister");
+                if (!quiet) MessageBox.Show(command == "--register" ? ((bool)status["replacedPrevious"] ? "已将旧版注册自动替换为当前版本，无需先卸载。\n\n" : "已将轻笺加入 Markdown 的打开方式。\n\n") + Application.ExecutablePath + "\n\n首次使用时，可在 Windows 的“打开方式”中选择轻笺并设为默认。" : "已移除轻笺的系统注册。\n程序文件、文档、图片和草稿均保留。\n\n如果轻笺曾是默认应用，请为 .md 重新选择打开方式。", "轻笺", MessageBoxButtons.OK, MessageBoxIcon.Information);
             }
             catch (Exception ex)
             {

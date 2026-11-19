@@ -32,6 +32,11 @@ export function renderDiagram(source, theme, isCurrent = () => true) {
     const clean = purifier.sanitize(svg, { USE_PROFILES: { svg: true, svgFilters: true }, FORBID_TAGS: ['script', 'foreignObject', 'iframe'] });
     const parsed = new DOMParser().parseFromString(clean, 'image/svg+xml');
     const root = parsed.documentElement;
+    const bounds = (root.getAttribute('viewBox') || '').trim().split(/[ ,]+/).map(Number);
+    if (bounds.length === 4 && bounds.every(Number.isFinite) && bounds[2] > 0 && bounds[3] > 0) {
+      root.setAttribute('width', String(Math.ceil(bounds[2])));
+      root.setAttribute('height', String(Math.ceil(bounds[3])));
+    }
     root.querySelectorAll('a').forEach(link => link.replaceWith(...link.childNodes));
     root.querySelectorAll('*').forEach(node => {
       for (const attr of [...node.attributes]) {

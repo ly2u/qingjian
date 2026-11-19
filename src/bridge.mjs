@@ -35,7 +35,7 @@ async function browserRequest(method, params) {
     case 'init': {
       let session;
       try { session = JSON.parse(localStorage.getItem('qingjian.session')); } catch { /* New or invalid browser profile. */ }
-      return { session, recent: [], workspace: null, version: '0.2.0' };
+      return { session, recent: [], workspace: null, version: '0.3.2' };
     }
     case 'persist': localStorage.setItem('qingjian.session', JSON.stringify(params)); return true;
     case 'title': document.title = `${params.name} — 轻笺`; return true;

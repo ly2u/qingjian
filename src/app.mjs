@@ -12,6 +12,7 @@ import { request, isDesktop, onHostEvent } from './bridge.mjs';
 import { sample } from './sample.mjs';
 import { enhancePreview } from './enhance.mjs';
 import { peerRangeField, showPeerRange, correspondingElement } from './correspondence.mjs';
+import { liveConfiguration, liveInteraction, livePreviewExtensions, liveHeadings } from './live-preview.mjs';
 
 const $ = selector => document.querySelector(selector);
 const html = escapeHTML;
@@ -19,6 +20,7 @@ const btn = (action, symbol, label, extra = '') => `<button class="icon-btn" dat
 const renderMarkdown = createPreview(window);
 const editorStates = new Map();
 const wrapSetting = new Compartment();
+const liveSetting = new Compartment();
 let documents = [], activeId, recent = [], workspace = null, view;
 let settings = { mode: 'split', theme: 'light', sync: true, sidebar: true, fontSize: 14, split: 50, wrap: true };
 let headings = [], sideTab = 'files', filter = '', renderTimer, persistTimer, toastTimer;
@@ -43,7 +45,7 @@ $('#app').innerHTML = `
     <header class="topbar">
       ${btn('sidebar', 'panel', '展开侧栏', 'id="show-sidebar"')}
       <div class="doc-meta"><div class="doc-title">${icon('file')}<span id="doc-name">开始写作.md</span><i id="dirty-indicator" class="dirty-dot" hidden></i></div><div class="doc-state" id="doc-state">准备就绪</div></div>
-      <nav class="mode-switch" aria-label="编辑视图"><button data-mode="edit" title="编辑 (Ctrl+1)">编辑</button><button data-mode="split" class="active" title="左右对照 (Ctrl+2)">对照</button><button data-mode="preview" title="预览 (Ctrl+3)">预览</button></nav>
+      <nav class="mode-switch" aria-label="编辑视图"><button data-mode="edit" title="编辑 (Ctrl+1)">编辑</button><button data-mode="split" class="active" title="左右对照 (Ctrl+2)">对照</button><button data-mode="live" title="实时编辑 (Ctrl+4)">实时</button><button data-mode="preview" title="预览 (Ctrl+3)">预览</button></nav>
       <div class="top-tools">${btn('theme', 'moon', '切换深浅主题', 'id="theme-button"')}${btn('focus', 'focus', '专注写作 (Ctrl+Shift+F)', 'id="focus-button"')}${btn('menu', 'more', '更多选项', 'aria-haspopup="menu" aria-expanded="false" id="menu-button"')}<span class="tool-separator"></span><button class="save-btn" data-action="save" title="保存 (Ctrl+S)">${icon('save')}保存</button></div>
       <div class="menu-popover" id="more-menu" role="menu" hidden>
         <button data-action="saveAs" role="menuitem">${icon('save')}另存为<kbd>Ctrl Shift S</kbd></button>
@@ -102,7 +104,7 @@ const highlightStyle = HighlightStyle.define([
 function editorState(content) {
   return EditorState.create({ doc: content, extensions: [
     lineNumbers(), highlightActiveLineGutter(), drawSelection(), dropCursor(), highlightActiveLine(),
-    history(), peerRangeField, markdown({ addKeymap: false }), bracketMatching(), indentOnInput(), syntaxHighlighting(highlightStyle),
+    history(), peerRangeField, livePreviewExtensions, liveSetting.of(liveConfiguration.of(liveContext())), markdown({ addKeymap: false }), bracketMatching(), indentOnInput(), syntaxHighlighting(highlightStyle),
     search({ top: true }), highlightSelectionMatches(),
     wrapSetting.of(settings.wrap ? EditorView.lineWrapping : []),
     EditorState.tabSize.of(2),
@@ -138,6 +140,14 @@ function editorState(content) {
 
 function newDocument(content = '', name = '未命名.md', savedContent = '') {
   return { id: crypto.randomUUID(), name, path: null, content, savedContent, encoding: 'UTF-8', lineEnding: 'LF', stamp: null, assetBase: '' };
+}
+
+function liveContext() {
+  return { enabled: settings.mode === 'live', enterActive: Boolean(view?.hasFocus), render: renderMarkdown, theme: settings.theme, assetBase: active()?.assetBase || '', onLink: target => openPreviewLink(target).catch(reportError) };
+}
+
+function refreshLiveContext() {
+  if (view) view.dispatch({ effects: liveSetting.reconfigure(liveConfiguration.of(liveContext())) });
 }
 
 function makeSession() {
@@ -238,6 +248,7 @@ async function activateDocument(id, focus = true) {
     view.dom.addEventListener('pointerup', () => schedulePeerHighlight(true));
   }
   view.dispatch({ effects: wrapSetting.reconfigure(settings.wrap ? EditorView.lineWrapping : []) });
+  refreshLiveContext();
   renderTabs(); renderFiles(); updateMeta(); updateCursor();
   $('#preview-scroll').scrollTop = 0;
   renderPreview();
@@ -248,7 +259,7 @@ async function activateDocument(id, focus = true) {
     try {
       const result = await request('activateDocument', { path: doc.path });
       doc.assetBase = result.assetBase;
-      if (generation === assetGeneration) renderPreview();
+      if (generation === assetGeneration) { refreshLiveContext(); renderPreview(); }
     } catch (error) { reportError(error); }
   }
 }
@@ -287,7 +298,7 @@ async function saveDocument(doc = active(), saveAs = false) {
   doc.assetBase = saved.assetBase || '';
   doc.savedContent = savedText;
   if (saved.recent) recent = saved.recent;
-  renderTabs(); renderFiles(); updateMeta(); renderPreview();
+  renderTabs(); renderFiles(); updateMeta(); refreshLiveContext(); renderPreview();
   await persistNow();
   toast(saved.browserDownload ? '已下载 Markdown 文件' : `已保存 ${doc.name}`);
   if (workspace && doc.path && !workspace.files.some(file => file.path.toLowerCase() === doc.path.toLowerCase())) refreshFolder().catch(reportError);
@@ -322,11 +333,17 @@ function confirmCloseDocument(name) {
 }
 
 function scheduleRender() { clearTimeout(renderTimer); renderTimer = setTimeout(renderPreview, 120); }
-function renderPreview() {
+function renderPreview({ force = false } = {}) {
   clearTimeout(renderTimer);
   const doc = active();
   if (!doc) return;
   const generation = ++previewGeneration;
+  if (settings.mode === 'live' && !force) {
+    headings = view ? liveHeadings(view.state) : [];
+    renderOutline();
+    pendingPreview = Promise.resolve();
+    return pendingPreview;
+  }
   const result = renderMarkdown(doc.content);
   headings = result.headings;
   $('#preview').innerHTML = result.html || '<p class="preview-empty">从左边写下第一句话。</p>';
@@ -435,6 +452,10 @@ function format(action) {
 function setMode(mode) {
   settings.mode = mode;
   $('.workspace').dataset.mode = mode;
+  refreshLiveContext();
+  $('.editor-panel .pane-label').innerHTML = `${icon('code')}${mode === 'live' ? '实时编辑' : 'MARKDOWN'}`;
+  $('.editor-panel .pane-note').textContent = mode === 'live' ? '点击段落编辑 · Esc 恢复排版' : '写下你的想法';
+  $('#sync-button').hidden = mode === 'live';
   document.querySelectorAll('[data-mode]').forEach(button => {
     if (button.tagName !== 'BUTTON') return;
     button.classList.toggle('active', button.dataset.mode === mode);
@@ -448,7 +469,7 @@ function setMode(mode) {
 function applySettings() {
   settings.fontSize = Math.min(22, Math.max(12, Number(settings.fontSize) || 14));
   settings.split = Math.min(75, Math.max(25, Number(settings.split) || 50));
-  if (!['edit', 'split', 'preview'].includes(settings.mode)) settings.mode = 'split';
+  if (!['edit', 'split', 'live', 'preview'].includes(settings.mode)) settings.mode = 'split';
   if (!['light', 'dark'].includes(settings.theme)) settings.theme = 'light';
   document.documentElement.dataset.theme = settings.theme;
   document.documentElement.style.setProperty('--editor-size', `${settings.fontSize}px`);
@@ -487,15 +508,17 @@ async function exportHTML() {
 }
 
 function showHelp() {
-  const shortcuts = [ ['新建 / 打开文档', 'Ctrl N / Ctrl O'], ['保存 / 另存为', 'Ctrl S / Ctrl Shift S'], ['编辑 / 对照 / 预览', 'Ctrl 1 / 2 / 3'], ['查找 / 替换', 'Ctrl F / Ctrl H'], ['粗体 / 斜体 / 链接', 'Ctrl B / Ctrl I / Ctrl K'], ['撤销 / 重做', 'Ctrl Z / Ctrl Y'], ['专注写作', 'Ctrl Shift F'], ['关闭当前文档', 'Ctrl W'], ['打印 / 导出 PDF', 'Ctrl P'] ];
+  const shortcuts = [ ['新建 / 打开文档', 'Ctrl N / Ctrl O'], ['保存 / 另存为', 'Ctrl S / Ctrl Shift S'], ['编辑 / 对照 / 预览', 'Ctrl 1 / 2 / 3'], ['实时编辑 / 恢复排版', 'Ctrl 4 / Esc'], ['查找 / 替换', 'Ctrl F / Ctrl H'], ['粗体 / 斜体 / 链接', 'Ctrl B / Ctrl I / Ctrl K'], ['撤销 / 重做', 'Ctrl Z / Ctrl Y'], ['专注写作', 'Ctrl Shift F'], ['关闭当前文档', 'Ctrl W'], ['打印 / 导出 PDF', 'Ctrl P'] ];
   const dialog = $('#help-dialog');
-  dialog.innerHTML = `<div class="dialog-title"><h2 id="help-title">轻笺，留一点空间给想法。</h2><form method="dialog">${btn('closeHelp', 'close', '关闭说明')}</form></div><p class="dialog-caption">一个安静、离线的 Markdown 编辑器 · v0.2.0</p>${shortcuts.map(([label, key]) => `<div class="shortcut-row"><span>${label}</span><kbd>${key}</kbd></div>`).join('')}<div class="dialog-foot">对照视图中，两边点击内容可互相定位并高亮。<br>公式使用 $…$ 或 $$…$$；图表使用 mermaid 代码块。<br>修改自动保留为草稿；保存原文件请按 Ctrl+S。<br>设置默认打开方式：更多选项 → Windows 文件关联。</div>`;
+  dialog.innerHTML = `<div class="dialog-title"><h2 id="help-title">轻笺，留一点空间给想法。</h2><form method="dialog">${btn('closeHelp', 'close', '关闭说明')}</form></div><p class="dialog-caption">一个安静、离线的 Markdown 编辑器 · v0.3.2</p>${shortcuts.map(([label, key]) => `<div class="shortcut-row"><span>${label}</span><kbd>${key}</kbd></div>`).join('')}<div class="dialog-foot">实时模式点击段落展开源码，Esc 恢复排版，Ctrl+单击可打开链接。<br>对照视图中，两边点击内容可互相定位并高亮。<br>公式使用 $…$ 或 $$…$$；图表使用 mermaid 代码块。<br>修改自动保留为草稿；保存原文件请按 Ctrl+S。<br>设置默认打开方式：更多选项 → Windows 文件关联。</div>`;
   dialog.showModal();
 }
 
 function renderIntegration(status) {
-  const stateLabel = status.current ? '已注册到当前用户' : status.registered ? '另一位置的轻笺已注册' : '尚未注册';
-  $('#integration-dialog').innerHTML = `<div class="dialog-title"><h2 id="integration-title">Windows 文件关联</h2>${btn('closeIntegration', 'close', '关闭文件关联设置')}</div><p class="dialog-caption">将轻笺加入 .md、.markdown 和 .mdown 的“打开方式”，然后在 Windows 中选择默认应用。</p><div class="integration-state">${html(stateLabel)}<small>${html(status.current || !status.registered ? status.executable : status.registeredExecutable)}</small></div><div class="integration-buttons"><button data-action="registerApp">${status.current ? '更新注册位置' : '注册到打开方式'}</button><button class="primary" data-action="defaultApp">选择默认应用</button></div><button class="integration-remove" data-action="unregisterApp" ${!status.current ? 'disabled' : ''}>移除系统注册</button><p class="dialog-foot">注册只对当前用户生效，无需管理员权限。<br>移除注册会保留程序、文档和草稿。若要删除程序，请先移除注册，再删除程序文件夹。<br>移动程序文件夹后，请重新注册。</p>`;
+  const replacing = status.registered && !status.current;
+  const stateLabel = status.current ? '已注册到当前用户' : replacing ? '已检测到旧版注册，可直接替换' : '尚未注册';
+  const paths = replacing ? `旧位置：${html(status.registeredExecutable)}</small><small>当前版本：${html(status.executable)}` : html(status.executable);
+  $('#integration-dialog').innerHTML = `<div class="dialog-title"><h2 id="integration-title">Windows 文件关联</h2>${btn('closeIntegration', 'close', '关闭文件关联设置')}</div><p class="dialog-caption">将轻笺加入 .md、.markdown 和 .mdown 的“打开方式”。安装新版时可直接更新注册，无需先移除旧版注册。</p><div class="integration-state">${html(stateLabel)}<small>${paths}</small></div><div class="integration-buttons"><button data-action="registerApp">${replacing ? '替换旧版注册' : status.current ? '更新当前注册' : '注册到打开方式'}</button><button class="primary" data-action="defaultApp">选择默认应用</button></div><button class="integration-remove" data-action="unregisterApp" ${!status.current ? 'disabled' : ''}>移除系统注册</button><p class="dialog-foot">注册只对当前用户生效，无需管理员权限。<br>新版会自动接管旧版的打开路径和系统入口，原来选择轻笺的默认打开方式可沿用。<br>移除注册会保留程序、文档和草稿。</p>`;
 }
 
 async function showIntegration() {
@@ -510,7 +533,7 @@ async function updateIntegration(action) {
   try {
     const status = await request('integration', { action });
     renderIntegration(status);
-    if (action === 'register') toast('已加入 Windows 打开方式');
+    if (action === 'register') toast(status.replacedPrevious ? '旧版注册已自动替换为当前版本' : '已更新 Windows 打开方式');
     if (action === 'unregister') toast('已移除系统注册，文档和草稿已保留');
   } finally { buttons.forEach(button => { button.disabled = false; }); }
 }
@@ -554,7 +577,7 @@ async function runAction(action) {
     case 'defaultApp': await updateIntegration('defaults'); break;
     case 'project': await request('openExternal', { url: projectURL }); break;
     case 'export': await exportHTML(); break;
-    case 'print': await renderPreview(); await document.fonts.ready; await request('print'); break;
+    case 'print': await renderPreview({ force: true }); await document.fonts.ready; await request('print'); break;
     case 'image': {
       if (!active().path && !await saveDocument()) break;
       const result = await request('insertImage', { path: active().path });
@@ -588,7 +611,7 @@ document.addEventListener('click', event => {
   } else if (button.dataset.heading !== undefined) {
     const heading = headings[Number(button.dataset.heading)];
     const line = view.state.doc.line(Math.min(heading.line, view.state.doc.lines));
-    view.dispatch({ selection: { anchor: line.from }, effects: EditorView.scrollIntoView(line.from, { y: 'start', yMargin: 20 }) });
+    view.dispatch({ selection: { anchor: line.from }, effects: [EditorView.scrollIntoView(line.from, { y: 'start', yMargin: 20 }), liveInteraction.of(true)] });
     $(`#${heading.id}`)?.scrollIntoView({ block: 'start' });
   }
 });
@@ -613,17 +636,28 @@ $('#preview').addEventListener('click', event => {
   const anchor = event.target.closest('a');
   if (!anchor) return;
   event.preventDefault();
-  const target = anchor.getAttribute('href');
+  openPreviewLink(anchor.getAttribute('href')).catch(reportError);
+});
+async function openPreviewLink(target) {
   if (!target) return;
   if (target.startsWith('#')) {
     let id;
     try { id = decodeURIComponent(target.slice(1)); } catch { return; }
-    const heading = [...$('#preview').querySelectorAll('h1,h2,h3,h4,h5,h6')].find(el => el.id === id || el.textContent.toLowerCase().replace(/\s+/g, '-') === id.toLowerCase());
-    heading?.scrollIntoView({ block: 'start' });
-  } else if (/^(https?:|mailto:)/i.test(target)) request('openExternal', { url: target }).catch(reportError);
-  else if (active().path) request('openLink', { path: active().path, target }).then(addFile).catch(reportError);
+    if (settings.mode === 'live') {
+      const heading = headings.find(item => item.id === id || item.text.toLowerCase().replace(/\s+/g, '-') === id.toLowerCase());
+      if (heading) {
+        const from = view.state.doc.line(heading.line).from;
+        view.dispatch({ selection: { anchor: from }, effects: [liveInteraction.of(true), EditorView.scrollIntoView(from, { y: 'start' })] });
+        view.focus();
+      }
+    } else {
+      const heading = [...$('#preview').querySelectorAll('h1,h2,h3,h4,h5,h6')].find(el => el.id === id || el.textContent.toLowerCase().replace(/\s+/g, '-') === id.toLowerCase());
+      heading?.scrollIntoView({ block: 'start' });
+    }
+  } else if (/^(https?:|mailto:)/i.test(target)) await request('openExternal', { url: target });
+  else if (active().path) await addFile(await request('openLink', { path: active().path, target }));
   else toast('请先保存文档，再跳转到本地链接。');
-});
+}
 $('#preview').addEventListener('click', event => {
   if (settings.mode !== 'split' || event.target.closest('a,input,button,summary') || window.getSelection()?.toString()) return;
   const element = event.target.closest('[data-source-from][data-source-to]');
@@ -635,7 +669,7 @@ document.addEventListener('keydown', event => {
   if (!event.ctrlKey || event.altKey || event.isComposing || document.querySelector('dialog[open]')) return;
   const key = event.key.toLowerCase();
   const actions = { n: 'new', o: 'open', s: event.shiftKey ? 'saveAs' : 'save', p: 'print', w: 'close', f: event.shiftKey ? 'focus' : 'find', h: 'find' };
-  if (['1', '2', '3'].includes(key)) { event.preventDefault(); setMode({ 1: 'edit', 2: 'split', 3: 'preview' }[key]); return; }
+  if (['1', '2', '3', '4'].includes(key)) { event.preventDefault(); setMode({ 1: 'edit', 2: 'split', 3: 'preview', 4: 'live' }[key]); return; }
   if (key in actions && actions[key]) {
     event.preventDefault();
     const promise = actions[key] === 'close' ? closeDocument(activeId) : runAction(actions[key]);

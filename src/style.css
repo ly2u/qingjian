@@ -15,6 +15,10 @@
   --accent: #376c55;
   --accent-soft: #eff4ed;
   --code-bg: #f5f6f1;
+  --selection-bg: #d76b7438;
+  --peer-bg: #d97b831a;
+  --peer-range-bg: #d97b8329;
+  --peer-border: #cf858c;
   --side-width: 222px;
   --editor-size: 14px;
   --reading-size: 16px;
@@ -34,11 +38,15 @@
   --accent: #a5c49c;
   --accent-soft: #2a352b;
   --code-bg: #1c221d;
+  --selection-bg: #ec8c9559;
+  --peer-bg: #ec8c951c;
+  --peer-range-bg: #ec8c952e;
+  --peer-border: #cb8b92;
   color-scheme: dark;
 }
-.workspace[data-mode="split"] .markdown-body .peer-active { background-color: #78986512; box-shadow: inset 2px 0 0 #8ca77c; border-radius: 3px; transition: background-color .15s; }
-.workspace[data-mode="split"] .cm-peer-range { background: #78986520 !important; box-shadow: inset 2px 0 0 #8ca77c; }
-:root[data-theme="dark"] .workspace[data-mode="split"] .markdown-body .peer-active { background-color: #a5c49c12; }
+.workspace[data-mode="split"] .markdown-body .peer-active { background-color: var(--peer-bg); box-shadow: inset 2px 0 0 var(--peer-border); border-radius: 3px; transition: background-color .15s; }
+.workspace[data-mode="split"] .cm-peer-range { background: var(--peer-range-bg) !important; box-shadow: inset 2px 0 0 var(--peer-border); }
+::selection { background: var(--selection-bg); }
 .integration-state { padding: 13px 15px; background: var(--sidebar); border-radius: 6px; font-size: 12px; line-height: 1.9; }
 .integration-state small { display: block; overflow-wrap: anywhere; color: var(--muted); font-size: 10px; }
 .integration-buttons { display: flex; gap: 8px; margin: 18px 0; flex-wrap: wrap; }
@@ -155,7 +163,7 @@ button { -webkit-tap-highlight-color: transparent; }
 .cm-lineNumbers .cm-gutterElement { padding: 0 9px 0 15px; }
 .cm-activeLineGutter { background: transparent !important; color: var(--accent) !important; }
 .cm-activeLine { background: #7b976609 !important; }
-.cm-selectionBackground { background: #7b976625 !important; }
+.cm-selectionBackground { background: var(--selection-bg) !important; }
 .cm-cursor { border-left-color: var(--accent) !important; }
 .cm-tooltip, .cm-panels { background: var(--paper) !important; color: var(--text) !important; border-color: var(--border) !important; }
 .cm-panels { font-family: "Segoe UI", "Microsoft YaHei", sans-serif; font-size: 12px; }
@@ -176,6 +184,20 @@ button { -webkit-tap-highlight-color: transparent; }
 .workspace[data-mode="preview"] .editor-panel, .workspace[data-mode="preview"] .divider { display: none; }
 .workspace[data-mode="preview"] .preview-scroll { padding-top: 25px; }
 .workspace[data-mode="preview"] .preview-panel { width: 100%; }
+.workspace[data-mode="live"] .preview-panel, .workspace[data-mode="live"] .divider { display: none; }
+.workspace[data-mode="live"] .editor-panel { width: 100%; background: var(--paper); }
+.workspace[data-mode="live"] .cm-gutters { display: none; }
+.workspace[data-mode="live"] .cm-content { width: 100%; max-width: 900px; margin: 0 auto; padding: 22px 36px 130px; }
+.workspace[data-mode="live"] .cm-line { padding: 1px 12px; }
+.workspace[data-mode="live"] .qj-live-source { background: var(--peer-bg); box-shadow: inset 2px 0 0 var(--peer-border); }
+.qj-live-block.markdown-body { width: auto; max-width: none; margin: 4px 12px; cursor: text; white-space: normal; }
+.qj-live-block .preview-block > :first-child { margin-top: 0; }
+.qj-live-block .preview-block > :last-child { margin-bottom: 0; }
+.qj-live-block .preview-block > ul, .qj-live-block .preview-block > ol { margin-top: 0; margin-bottom: 0; }
+.qj-live-block .preview-block > ul > li, .qj-live-block .preview-block > ol > li { margin: 0; }
+.qj-live-block:focus-visible { outline: 1px solid var(--peer-border); outline-offset: 5px; border-radius: 3px; }
+.qj-live-block .qj-diagram { margin-left: 0; margin-right: 0; }
+.qj-live-block .qj-math { cursor: text; }
 .statusbar { grid-column: 1 / -1; border-top: 1px solid var(--border); background: var(--bg); display: flex; align-items: center; justify-content: space-between; padding: 0 17px; color: var(--muted); font-size: 10px; user-select: none; }
 .status-left, .status-right { display: flex; align-items: center; gap: 17px; }
 .status-left .icon { width: 11px; height: 11px; margin-right: 4px; }
