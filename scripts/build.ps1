@@ -13,10 +13,24 @@ if (-not $SkipWeb) {
 }
 $sdkVersion = '1.0.4314.35'
 $webview = Join-Path $cache 'webview2'
+Add-Type -AssemblyName System.IO.Compression.FileSystem
 if (-not (Test-Path -LiteralPath (Join-Path $webview 'lib\net462\Microsoft.Web.WebView2.Core.dll'))) {
     $archive = Join-Path $cache 'webview2.zip'
     Invoke-WebRequest -UseBasicParsing -Uri "https://api.nuget.org/v3-flatcontainer/microsoft.web.webview2/$sdkVersion/microsoft.web.webview2.$sdkVersion.nupkg" -OutFile $archive
-    Expand-Archive -LiteralPath $archive -DestinationPath $webview -Force
+    # Use .NET Framework APIs directly; newer Archive modules may require PowerShell 7.
+    $sdkRoot = [IO.Path]::GetFullPath($webview).TrimEnd([IO.Path]::DirectorySeparatorChar) + [IO.Path]::DirectorySeparatorChar
+    $sdkZip = [IO.Compression.ZipFile]::OpenRead($archive)
+    try {
+        foreach ($entry in $sdkZip.Entries) {
+            $destination = [IO.Path]::GetFullPath((Join-Path $webview $entry.FullName))
+            if (-not $destination.StartsWith($sdkRoot, [StringComparison]::OrdinalIgnoreCase)) { throw 'Invalid SDK archive path.' }
+            if ($entry.Name -eq '') { [IO.Directory]::CreateDirectory($destination) | Out-Null }
+            else {
+                [IO.Directory]::CreateDirectory([IO.Path]::GetDirectoryName($destination)) | Out-Null
+                [IO.Compression.ZipFileExtensions]::ExtractToFile($entry, $destination, $true)
+            }
+        }
+    } finally { $sdkZip.Dispose() }
 }
 Add-Type -AssemblyName System.Drawing
 $bitmap = New-Object Drawing.Bitmap(128, 128)
@@ -70,7 +84,12 @@ foreach ($entry in @(@('注册到打开方式.cmd', '--register'), @('移除系�
 Get-ChildItem -LiteralPath $webview -File | Where-Object { $_.Name -match '^(LICENSE|NOTICE)' } | ForEach-Object { Copy-Item -LiteralPath $_.FullName -Destination (Join-Path $output ('WebView2-' + $_.Name)) -Force }
 if (-not $NoZip) {
     $zip = Join-Path $projectRoot '轻笺-Windows-x64.zip'
-    Compress-Archive -Path (Join-Path $output '*') -DestinationPath $zip -Force
+    $temporaryZip = Join-Path $cache ('package-' + [Guid]::NewGuid().ToString('N') + '.zip')
+    try {
+        [IO.Compression.ZipFile]::CreateFromDirectory($output, $temporaryZip, [IO.Compression.CompressionLevel]::Optimal, $false)
+        if ([IO.File]::Exists($zip)) { [IO.File]::Replace($temporaryZip, $zip, [NullString]::Value) }
+        else { [IO.File]::Move($temporaryZip, $zip) }
+    } finally { if ([IO.File]::Exists($temporaryZip)) { [IO.File]::Delete($temporaryZip) } }
     Write-Host ('压缩包：' + $zip)
 }
 $bytes = (Get-ChildItem -LiteralPath $output -File -Recurse | Measure-Object Length -Sum).Sum
