@@ -24,7 +24,7 @@ const editorStates = new Map();
 const wrapSetting = new Compartment();
 const liveSetting = new Compartment();
 let documents = [], activeId, recent = [], workspace = null, view;
-let settings = { mode: 'split', theme: 'light', sync: true, sidebar: true, sideTab: 'files', fontSize: 14, split: 50, wrap: true };
+let settings = { mode: 'split', theme: 'light', sync: true, sidebar: true, sideTab: 'files', sidebarWidth: null, fontSize: 14, split: 50, wrap: true };
 let headings = [], sideTab = 'files', filter = '', renderTimer, persistTimer, toastTimer;
 let persistChain = Promise.resolve(), scrollPairs = [], scrollOwner = null, mapFrame, lastDraftTime = null;
 let assetGeneration = 0;
@@ -38,13 +38,14 @@ const projectURL = 'https://github.com/ly2u/qingjian';
 
 $('#app').innerHTML = `
 <div class="shell">
-  <aside class="sidebar" aria-label="文档导航">
+  <aside class="sidebar" id="sidebar-nav" aria-label="文档导航">
     <div class="brand"><img src="icon.svg" alt=""><div><span class="brand-name">轻笺</span><span class="brand-note">QINGJIAN</span></div>${btn('sidebar', 'panel', '收起侧栏')}</div>
     <div class="side-actions"><button data-action="new">${icon('plus')}新建</button><button data-action="open">${icon('folderOpen')}打开</button></div>
     <nav class="side-tabs" aria-label="侧栏视图"><button class="active" data-side="files" aria-controls="file-list" aria-pressed="true">文档</button><button data-side="outline" aria-controls="outline-list" aria-pressed="false" title="文档目录（大纲）">目录</button></nav>
     <label class="file-search">${icon('search')}<input id="file-filter" placeholder="筛选文档…" aria-label="筛选文档"></label>
     <div class="side-scroll"><div id="file-list"></div><nav id="outline-list" aria-label="文档目录" hidden></nav></div>
     <div class="side-bottom"><span><i class="offline-dot"></i>本地写作 · 离线可用</span>${btn('help', 'keyboard', '快捷键与使用说明')}</div>
+    <div class="sidebar-resizer" id="sidebar-resizer" role="separator" aria-label="调整侧栏宽度" aria-controls="sidebar-nav" aria-orientation="vertical" aria-valuemin="180" aria-valuemax="640" aria-valuenow="222" tabindex="0" title="拖动调整侧栏宽度，双击恢复默认"></div>
   </aside>
   <main class="main">
     <header class="topbar">
@@ -354,7 +355,7 @@ function renderOutline() {
     ? `<div class="section-label"><span>文档目录 · ${headings.length}</span>${btn('expandOutline', 'outline', '全部展开')}${btn('collapseOutline', 'chevronDown', '全部收起')}</div>` + outlineItems.map(item => {
       const title = item.text || '未命名标题';
       const toggle = item.hasChildren ? `<button class="outline-fold icon-btn" data-fold="${item.index}" aria-expanded="${!item.collapsed}" aria-label="${item.collapsed ? '展开' : '收起'} ${html(title)} 的子标题" title="${item.collapsed ? '展开' : '收起'}子标题">${icon(item.collapsed ? 'chevron' : 'chevronDown')}</button>` : '<span class="outline-fold-spacer"></span>';
-      return `<div class="outline-row level-${item.level}" data-outline-row="${item.index}" style="padding-left:${Math.min(item.depth, 5) * 12}px" ${item.hidden ? 'hidden' : ''}>${toggle}<button class="outline-item" data-heading="${item.index}" title="${html(title)} · 第 ${item.line} 行"><span class="outline-level">H${item.level}</span><span class="outline-text">${html(title)}</span></button></div>`;
+      return `<div class="outline-row level-${item.level}" data-outline-row="${item.index}" style="padding-left:${Math.min(item.depth, 5) * 12}px" ${item.hidden ? 'hidden' : ''}>${toggle}<button class="outline-item" data-heading="${item.index}" title="${html(title)} · 第 ${item.line} 行"><span class="outline-text">${html(title)}</span></button></div>`;
     }).join('')
     : '<div class="empty-side outline-empty">这份文档还没有标题。<br>用 #、##、### 写下标题，<br>这里会自动生成可跳转的目录。</div>';
   scheduleOutlineHighlight(settings.mode === 'preview' ? 'preview' : outlineSource);
@@ -391,6 +392,30 @@ function setSidebarVisible(visible) {
   shell.classList.remove('focus-mode');
   $('#focus-button').classList.remove('active');
   updateOutlineButton(); scheduleMap(); view?.requestMeasure(); schedulePersist();
+}
+
+function sidebarWidthBounds() {
+  return { min: 180, max: Math.max(180, window.innerWidth - 560) };
+}
+
+function applySidebarWidth() {
+  const bounds = sidebarWidthBounds();
+  const preferred = Number(settings.sidebarWidth) || (window.innerWidth <= 1100 ? 195 : 222);
+  const width = Math.round(Math.min(bounds.max, Math.max(bounds.min, preferred)));
+  document.documentElement.style.setProperty('--side-width', `${width}px`);
+  const handle = $('#sidebar-resizer');
+  handle.setAttribute('aria-valuemin', bounds.min);
+  handle.setAttribute('aria-valuemax', bounds.max);
+  handle.setAttribute('aria-valuenow', width);
+  handle.setAttribute('aria-valuetext', `${width} 像素`);
+  view?.requestMeasure(); scheduleMap();
+}
+
+function setSidebarWidth(width, persist = true) {
+  const bounds = sidebarWidthBounds();
+  settings.sidebarWidth = width === null ? null : Math.round(Math.min(bounds.max, Math.max(bounds.min, width)));
+  applySidebarWidth();
+  if (persist) schedulePersist();
 }
 
 function scheduleOutlineHighlight(source = outlineSource, reveal = false) {
@@ -708,6 +733,7 @@ function applySettings() {
   document.documentElement.style.setProperty('--editor-size', `${settings.fontSize}px`);
   document.documentElement.style.setProperty('--reading-size', `${settings.fontSize + 2}px`);
   document.documentElement.style.setProperty('--split', `${settings.split}%`);
+  applySidebarWidth();
   $('.shell').classList.toggle('sidebar-hidden', !settings.sidebar);
   setSideTab(settings.sideTab, false);
   $('#font-size').textContent = settings.fontSize;
@@ -744,7 +770,7 @@ async function exportHTML() {
 function showHelp() {
   const shortcuts = [ ['新建 / 打开文档', 'Ctrl N / Ctrl O'], ['保存 / 另存为', 'Ctrl S / Ctrl Shift S'], ['编辑 / 对照 / 预览', 'Ctrl 1 / 2 / 3'], ['实时编辑 / 恢复排版', 'Ctrl 4 / Esc'], ['查找 / 替换', 'Ctrl F / Ctrl H'], ['粗体 / 斜体 / 链接', 'Ctrl B / Ctrl I / Ctrl K'], ['撤销 / 重做', 'Ctrl Z / Ctrl Y'], ['显示 / 收起目录', 'Ctrl Shift O'], ['专注写作', 'Ctrl Shift F'], ['关闭当前文档', 'Ctrl W'], ['打印 / 导出 PDF', 'Ctrl P'] ];
   const dialog = $('#help-dialog');
-  dialog.innerHTML = `<div class="dialog-title"><h2 id="help-title">轻笺，留一点空间给想法。</h2><form method="dialog">${btn('closeHelp', 'close', '关闭说明')}</form></div><p class="dialog-caption">一个安静、离线的 Markdown 编辑器 · v0.4.1</p>${shortcuts.map(([label, key]) => `<div class="shortcut-row"><span>${label}</span><kbd>${key}</kbd></div>`).join('')}<div class="dialog-foot">实时模式点击段落展开源码，Esc 恢复排版，Ctrl+单击可打开链接。<br>顶部“目录”可查看标题层级、折叠子章节并点击跳转。<br>对照视图中，两边点击内容可互相定位并高亮。<br>公式使用 $…$ 或 $$…$$；图表使用 mermaid 代码块。<br>已绑定文件自动保存，并自动读取外部修改。<br>未命名文档首次按 Ctrl+S 选择保存位置；冲突时保留本地编辑。<br>设置默认打开方式：更多选项 → Windows 文件关联。</div>`;
+  dialog.innerHTML = `<div class="dialog-title"><h2 id="help-title">轻笺，留一点空间给想法。</h2><form method="dialog">${btn('closeHelp', 'close', '关闭说明')}</form></div><p class="dialog-caption">一个安静、离线的 Markdown 编辑器 · v0.4.2</p>${shortcuts.map(([label, key]) => `<div class="shortcut-row"><span>${label}</span><kbd>${key}</kbd></div>`).join('')}<div class="dialog-foot">实时模式点击段落展开源码，Esc 恢复排版，Ctrl+单击可打开链接。<br>顶部“目录”可查看标题层级、折叠子章节并点击跳转。<br>拖动左侧栏右边界调整宽度，双击恢复默认。<br>对照视图中，两边点击内容可互相定位并高亮。<br>公式使用 $…$ 或 $$…$$；图表使用 mermaid 代码块。<br>已绑定文件自动保存，并自动读取外部修改。<br>未命名文档首次按 Ctrl+S 选择保存位置；冲突时保留本地编辑。<br>设置默认打开方式：更多选项 → Windows 文件关联。</div>`;
   dialog.showModal();
 }
 
@@ -945,7 +971,36 @@ divider.addEventListener('keydown', event => {
   applySettings();
 });
 divider.addEventListener('dblclick', () => { settings.split = 50; applySettings(); });
-window.addEventListener('resize', () => { scheduleMap(); updateOutlineButton(); });
+const sidebarResizer = $('#sidebar-resizer');
+sidebarResizer.addEventListener('pointerdown', event => {
+  if (event.button !== 0 || !event.isPrimary) return;
+  event.preventDefault();
+  sidebarResizer.focus({ preventScroll: true });
+  sidebarResizer.setPointerCapture(event.pointerId);
+  document.documentElement.classList.add('resizing-sidebar');
+  const width = $('#sidebar-nav').getBoundingClientRect().width, startX = event.clientX;
+  const drag = e => setSidebarWidth(width + e.clientX - startX, false);
+  const end = () => {
+    sidebarResizer.removeEventListener('pointermove', drag);
+    sidebarResizer.removeEventListener('pointerup', end);
+    sidebarResizer.removeEventListener('pointercancel', end);
+    sidebarResizer.removeEventListener('lostpointercapture', end);
+    document.documentElement.classList.remove('resizing-sidebar');
+    schedulePersist();
+  };
+  sidebarResizer.addEventListener('pointermove', drag);
+  sidebarResizer.addEventListener('pointerup', end);
+  sidebarResizer.addEventListener('pointercancel', end);
+  sidebarResizer.addEventListener('lostpointercapture', end);
+});
+sidebarResizer.addEventListener('keydown', event => {
+  if (!['ArrowLeft', 'ArrowRight', 'Home', 'End'].includes(event.key)) return;
+  event.preventDefault();
+  const width = Number(sidebarResizer.getAttribute('aria-valuenow'));
+  setSidebarWidth(event.key === 'Home' ? null : event.key === 'End' ? sidebarWidthBounds().max : width + (event.key === 'ArrowLeft' ? -10 : 10));
+});
+sidebarResizer.addEventListener('dblclick', () => setSidebarWidth(null));
+window.addEventListener('resize', () => { applySidebarWidth(); updateOutlineButton(); });
 
 let dragDepth = 0;
 document.addEventListener('dragenter', event => {

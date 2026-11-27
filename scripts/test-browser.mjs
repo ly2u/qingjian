@@ -380,6 +380,31 @@ try {
   await outlinePage.locator('#outline-button').click();
   await outlinePage.waitForSelector('#outline-list:not([hidden])');
   assert.equal(await outlinePage.locator('.outline-item').count(), 9);
+  assert.equal(await outlinePage.locator('.outline-level').count(), 0);
+  assert.equal(await outlinePage.locator('[data-heading="0"]').textContent(), '项目计划');
+  const resizeSidebar = async width => {
+    const current = await outlinePage.locator('.sidebar').evaluate(node => node.getBoundingClientRect().width);
+    const handle = await outlinePage.locator('#sidebar-resizer').boundingBox();
+    await outlinePage.mouse.move(handle.x + handle.width / 2, handle.y + 160);
+    await outlinePage.mouse.down();
+    await outlinePage.mouse.move(handle.x + handle.width / 2 + width - current, handle.y + 160, { steps: 8 });
+    await outlinePage.mouse.up();
+  };
+  await resizeSidebar(400);
+  assert.ok(Math.abs(await outlinePage.locator('.sidebar').evaluate(node => node.getBoundingClientRect().width) - 400) <= 1);
+  await resizeSidebar(1000);
+  assert.equal(await outlinePage.locator('#sidebar-resizer').getAttribute('aria-valuenow'), '880');
+  assert.ok(await outlinePage.locator('.topbar').evaluate(node => node.scrollWidth <= node.clientWidth + 1), 'wide sidebar leaves the document controls usable');
+  await resizeSidebar(400);
+  await outlinePage.locator('#sidebar-resizer').press('ArrowLeft');
+  assert.equal(await outlinePage.locator('#sidebar-resizer').getAttribute('aria-valuenow'), '390');
+  await outlinePage.locator('#sidebar-resizer').dblclick();
+  assert.equal(await outlinePage.locator('#sidebar-resizer').getAttribute('aria-valuenow'), '222');
+  await resizeSidebar(400);
+  await outlinePage.waitForFunction(() => window.__session.settings.sidebarWidth === 400);
+  assert.equal(await outlinePage.evaluate(() => window.__session.documents.find(doc => doc.id === 'outline-doc').content), outlineText, 'resizing never edits the document');
+  assert.ok(await outlinePage.locator('.topbar').evaluate(node => node.scrollWidth <= node.clientWidth + 1));
+  console.log('PASS sidebar dragging, keyboard resizing, reset and title-only outline labels');
   assert.equal(await outlinePage.locator('.outline-item').filter({ hasText: '代码内标题' }).count(), 0);
   assert.equal(await outlinePage.locator('.outline-item').filter({ hasText: '重复章节' }).count(), 2);
   await outlinePage.getByRole('button', { name: '收起 第一章 目标 的子标题', exact: true }).click();
@@ -398,7 +423,7 @@ try {
   await outlinePage.locator('[data-heading="7"]').click();
   await outlinePage.waitForFunction(line => document.querySelector('#cursor-position').textContent === `行 ${line}，列 1`, duplicateLine);
   await outlinePage.waitForFunction(() => Math.abs(document.querySelector('#qj-heading-7').getBoundingClientRect().top - document.querySelector('#preview-scroll').getBoundingClientRect().top) < 24);
-  assert.ok(await outlinePage.locator('.cm-scroller').evaluate(node => node.scrollTop > 300));
+  await outlinePage.waitForFunction(() => document.querySelector('.cm-scroller').scrollTop > 300);
   await outlinePage.waitForSelector('[data-heading="7"][aria-current="location"]');
   console.log('PASS outline jumps both split panes even when synchronized scrolling is off');
 
@@ -425,7 +450,7 @@ try {
   await outlinePage.keyboard.press('End'); await outlinePage.keyboard.insertText('（已修改）');
   await outlinePage.waitForFunction(() => document.querySelector('[data-heading="5"]').textContent.includes('已修改'));
   await outlinePage.locator('[data-mode="live"]').click();
-  await outlinePage.waitForFunction(() => document.querySelector('[data-heading="2"]').textContent === 'H3执行 清单');
+  await outlinePage.waitForFunction(() => document.querySelector('[data-heading="2"]').textContent === '执行 清单');
   await outlinePage.locator('[data-heading="8"]').click();
   await outlinePage.waitForSelector('[data-heading="8"][aria-current="location"]');
   await outlinePage.waitForFunction(() => {
@@ -447,11 +472,13 @@ try {
   await outlinePage.locator('#theme-button').click();
   await outlinePage.screenshot({ path: path.join(qa, 'outline-dark.png') });
   await outlinePage.setViewportSize({ width: 900, height: 650 });
+  await outlinePage.waitForFunction(() => document.querySelector('#sidebar-resizer').getAttribute('aria-valuenow') === '340');
   assert.ok(await outlinePage.locator('.topbar').evaluate(node => node.scrollWidth <= node.clientWidth + 1), 'header fits with the outline button');
   await outlinePage.setViewportSize({ width: 860, height: 650 });
   await outlinePage.locator('#outline-button').click();
   await outlinePage.waitForFunction(() => document.querySelector('#outline-button').getAttribute('aria-expanded') === 'true');
   assert.equal(await outlinePage.locator('.sidebar').evaluate(node => getComputedStyle(node).visibility), 'visible');
+  await outlinePage.waitForFunction(() => document.querySelector('#sidebar-resizer').getAttribute('aria-valuenow') === '300');
   await outlinePage.screenshot({ path: path.join(qa, 'outline-compact.png') });
   await outlinePage.waitForFunction(() => window.__session.settings.sideTab === 'outline' && window.__session.settings.sidebar);
   await outlinePage.evaluate(() => localStorage.setItem('test-outline-session', JSON.stringify(window.__session)));
@@ -460,6 +487,7 @@ try {
   await outlineRestored.goto(origin + '/?outline=restore');
   await outlineRestored.waitForSelector('#outline-list:not([hidden])');
   assert.equal(await outlineRestored.locator('#outline-button').getAttribute('aria-expanded'), 'true');
+  assert.equal(await outlineRestored.locator('#sidebar-resizer').getAttribute('aria-valuenow'), '400', 'restoring a wider window restores the preferred sidebar width');
   await outlineRestored.close();
   console.log('PASS outline shortcut, focus mode, dark theme, compact layout and restored preference');
 
@@ -475,7 +503,7 @@ try {
   console.log('PASS external changes rebuild the outline and untitled documents show heading guidance');
   assert.deepEqual(errors, [], 'no uncaught browser errors');
   console.log('PASS dark theme, keyboard modes and compact layout; no uncaught JavaScript errors');
-  await fs.writeFile(path.join(qa, 'browser-results.json'), JSON.stringify({ passed: 25, errors, images, checkedAt: new Date().toISOString() }, null, 2));
+  await fs.writeFile(path.join(qa, 'browser-results.json'), JSON.stringify({ passed: 26, errors, images, checkedAt: new Date().toISOString() }, null, 2));
 } finally {
   if (browser) await browser.close();
   await new Promise(resolve => server.close(resolve));
