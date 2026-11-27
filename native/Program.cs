@@ -17,7 +17,7 @@ using Microsoft.Web.WebView2.WinForms;
 
 [assembly: System.Reflection.AssemblyTitle("轻笺")]
 [assembly: System.Reflection.AssemblyDescription("轻量 Markdown 编辑器")]
-[assembly: System.Reflection.AssemblyVersion("0.3.2.0")]
+[assembly: System.Reflection.AssemblyVersion("0.4.0.0")]
 
 namespace Qingjian
 {
@@ -63,6 +63,7 @@ namespace Qingjian
         readonly string profile;
         readonly List<string> startupFiles = new List<string>();
         readonly WebView2 web = new WebView2();
+        readonly FileWatchService fileWatch;
         Dictionary<string, object> lastSession;
         string workspacePath;
         object workspace;
@@ -72,6 +73,13 @@ namespace Qingjian
 
         public EditorWindow(string[] args)
         {
+            fileWatch = new FileWatchService(delegate(string[] paths) {
+                try {
+                    if (!IsDisposed && IsHandleCreated) BeginInvoke(new Action(delegate {
+                        if (ready && !IsDisposed && web.CoreWebView2 != null) web.CoreWebView2.PostWebMessageAsJson(json.Serialize(new { @event = "filesChanged", paths = paths }));
+                    }));
+                } catch (InvalidOperationException) { }
+            });
             Text = "轻笺";
             BackColor = Color.FromArgb(243, 244, 239);
             MinimumSize = new Size(860, 590);
@@ -89,6 +97,8 @@ namespace Qingjian
             Controls.Add(web);
             Shown += async delegate { await Initialize(); };
             FormClosing += OnClosing;
+            FormClosed += delegate { fileWatch.Dispose(); };
+            Activated += delegate { if (ready) fileWatch.RecheckAll(); };
         }
 
         public void ReceiveFiles(string[] args)
@@ -322,7 +332,7 @@ namespace Qingjian
                             try { opening.Add(ReadDocument(path)); }
                             catch (Exception error) { openErrors.Add(Path.GetFileName(path) + "：" + error.Message); }
                         }
-                        result = new { session = lastSession, recent = recent.ToArray(), workspace = workspace, version = "0.3.2", filesToOpen = opening, openErrors = openErrors };
+                        result = new { session = lastSession, recent = recent.ToArray(), workspace = workspace, version = "0.4.0", filesToOpen = opening, openErrors = openErrors };
                         startupFiles.Clear();
                         break;
                     case "persist": Persist(data); result = true; break;
@@ -341,6 +351,16 @@ namespace Qingjian
                         if (dropped == null) throw new IOException("无法读取拖入的文件，请使用“打开”。");
                         result = ReadDocument(dropped.Path); break;
                     case "saveFile": result = SaveDocument(data, BoolValue(data, "saveAs")); break;
+                    case "watchFiles":
+                        object watchPaths;
+                        var watching = new List<string>();
+                        if (data.TryGetValue("paths", out watchPaths) && watchPaths is IEnumerable)
+                            foreach (object path in (IEnumerable)watchPaths) if (path is string) watching.Add(RequireKnown((string)path));
+                        fileWatch.SetPaths(watching); result = true; break;
+                    case "syncFile":
+                        string syncPath = RequireKnown(TextValue(data, "path"));
+                        result = await Task.Run(() => FileSynchronization.Synchronize(syncPath, TextValue(data, "content"), TextValue(data, "savedContent"), BoolValue(data, "write"), TextValue(data, "overwriteStamp"), BoolValue(data, "recreate"), TextValue(data, "encoding", "UTF-8"), TextValue(data, "lineEnding", "LF")));
+                        break;
                     case "openFolder":
                         using (var dialog = new FolderBrowserDialog { Description = "选择存放 Markdown 的文件夹", ShowNewFolderButton = false, SelectedPath = workspacePath ?? "" })
                         { if (dialog.ShowDialog(this) == DialogResult.OK) { workspacePath = dialog.SelectedPath; workspace = ScanWorkspace(workspacePath); result = workspace; } }

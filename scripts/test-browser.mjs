@@ -36,6 +36,20 @@ try {
     window.__registrationOwner = '';
     window.__nativeCalls = [];
     window.__session = session;
+    window.__disk = {};
+    let revision = 0;
+    const diskFile = (path, content) => ({ path, name: path.split('\\').pop(), content, encoding: 'UTF-8', lineEnding: 'LF', stamp: `revision-${++revision}` });
+    window.__emitHost = data => queueMicrotask(() => listeners.forEach(fn => fn({ data })));
+    window.__changeDisk = (content, path = window.__activeDiskPath) => {
+      if (content === null) delete window.__disk[path];
+      else window.__disk[path] = diskFile(path, content);
+      window.__emitHost({ event: 'filesChanged', paths: [path] });
+    };
+    if (location.search.includes('restore=')) {
+      documents[0].path = 'D:\\tests\\restored.md';
+      if (location.search.includes('restore=dirty')) documents[0].content += '\n恢复的本地编辑';
+      window.__disk[documents[0].path] = diskFile(documents[0].path, '# 启动前的外部修改\n');
+    }
     window.chrome ||= {};
     window.chrome.webview = {
       addEventListener(type, fn) { if (type === 'message') listeners.push(fn); },
@@ -46,7 +60,25 @@ try {
         if (method === 'init') result = { session: window.__session, workspace: null, recent: [] };
         if (method === 'persist') window.__session = structuredClone(params);
         if (method === 'activateDocument') result = { assetBase: '' };
-        if (method === 'saveFile') result = { ...params, path: `D:\\tests\\${params.name}`, stamp: 'test-save', assetBase: '' };
+        if (method === 'saveFile') {
+          const path = `D:\\tests\\${params.saveAs ? '副本-' : ''}${params.name}`;
+          window.__activeDiskPath = path;
+          result = { ...diskFile(path, params.content), assetBase: '' };
+          window.__disk[path] = result;
+        }
+        if (method === 'watchFiles') window.__watchedPaths = params.paths;
+        if (method === 'syncFile') {
+          const disk = window.__disk[params.path];
+          let kind;
+          if (!disk) kind = params.recreate ? 'saved' : 'missing';
+          else if (disk.content === params.content) kind = 'current';
+          else if (params.overwriteStamp && params.overwriteStamp !== disk.stamp || params.recreate) kind = 'conflict';
+          else if (!params.overwriteStamp && params.content === params.savedContent) kind = 'loaded';
+          else if (!params.overwriteStamp && disk.content !== params.savedContent) kind = 'conflict';
+          else kind = params.write ? 'saved' : 'unchanged';
+          if (kind === 'saved') window.__disk[params.path] = diskFile(params.path, params.content);
+          result = { kind, file: structuredClone(window.__disk[params.path] || null) };
+        }
         if (method === 'integration') {
           const previous = window.__registrationOwner;
           if (params.action === 'register' || params.action === 'defaults') window.__registrationOwner = 'D:\\轻笺\\轻笺.exe';
@@ -198,6 +230,12 @@ try {
   assert.ok(savedLive.includes('**粗体**') && savedLive.includes('，实时修改') && savedLive.includes('| A | B |') && savedLive.includes('```mermaid'));
   console.log('PASS live list items, tasks, select-all and file saving preserve original Markdown');
 
+  await page.keyboard.press('Control+Home');
+  await page.locator('.qj-live-block').filter({ hasText: '第一段：' }).click();
+  await page.keyboard.press('End'); await page.keyboard.insertText('，实时自动保存');
+  await page.waitForFunction(() => window.__disk[window.__activeDiskPath]?.content.includes('，实时自动保存'));
+  await page.keyboard.press('Escape');
+
   await page.locator('.cm-scroller').evaluate(node => { node.scrollTop = node.scrollHeight; });
   await page.waitForSelector('.qj-live-block .qj-diagram-image');
   await page.waitForSelector('.qj-live-block .katex');
@@ -213,9 +251,121 @@ try {
   await page.waitForFunction(() => document.documentElement.dataset.theme === 'light');
   await page.screenshot({ path: path.join(qa, 'live-preview.png') });
   console.log('PASS live formulas and diagrams render, unfold to source and restore');
+
+  const syncPage = await context.newPage();
+  syncPage.on('pageerror', error => errors.push(error.message));
+  await syncPage.goto(origin);
+  await syncPage.waitForSelector('.cm-content');
+  await syncPage.locator('[data-mode="edit"]').click();
+  await syncPage.keyboard.press('Control+s');
+  await syncPage.waitForFunction(() => document.querySelector('#doc-state').textContent.includes('自动保存已开启'));
+  await syncPage.locator('.cm-content').click();
+  await syncPage.keyboard.press('Control+End');
+  await syncPage.keyboard.insertText('\n自动保存验证');
+  await syncPage.waitForFunction(() => window.__disk[window.__activeDiskPath]?.content.includes('自动保存验证'));
+  assert.equal(await syncPage.evaluate(() => window.__nativeCalls.filter(call => call.method === 'saveFile').length), 1, 'editing an existing file never opens another save dialog');
+  await syncPage.keyboard.press('Control+z');
+  await syncPage.waitForFunction(() => !window.__disk[window.__activeDiskPath]?.content.includes('自动保存验证'));
+  console.log('PASS bound files automatically save edits and undo without a save dialog');
+
+  await syncPage.keyboard.press('Control+Home');
+  await syncPage.keyboard.press('ArrowDown'); await syncPage.keyboard.press('ArrowDown');
+  await syncPage.keyboard.press('Home'); await syncPage.keyboard.press('ArrowRight');
+  const cursorBefore = await syncPage.locator('#cursor-position').textContent();
+  await syncPage.evaluate(() => window.__changeDisk('# 外部更新\n\n' + window.__disk[window.__activeDiskPath].content));
+  await syncPage.waitForFunction(() => document.querySelector('.cm-content').textContent.startsWith('# 外部更新'));
+  assert.equal(await syncPage.locator('#cursor-position').textContent(), cursorBefore.replace('行 3', '行 5'));
+  await syncPage.keyboard.press('Control+z');
+  assert.ok((await syncPage.locator('.cm-content').textContent()).startsWith('# 外部更新'), 'undo cannot restore stale content from before an external reload');
+  await syncPage.locator('[data-mode="split"]').click();
+  await syncPage.waitForFunction(() => document.querySelector('#preview h1')?.textContent === '外部更新');
+  await syncPage.locator('.tab-title[data-doc="rich"]').click();
+  await syncPage.evaluate(() => window.__changeDisk('# 后台标签的外部更新\n'));
+  await syncPage.waitForFunction(() => window.__session.documents.find(doc => doc.id === 'plain').content.includes('后台标签的外部更新'));
+  assert.equal(await syncPage.locator('#doc-name').textContent(), '公式与图表.md');
+  await syncPage.locator('.tab-title[data-doc="plain"]').click();
+  await syncPage.waitForFunction(() => document.querySelector('.cm-content').textContent.includes('后台标签的外部更新'));
+  console.log('PASS active and inactive documents refresh with preview and cursor preserved');
+
+  await syncPage.locator('.cm-content').click(); await syncPage.keyboard.press('Control+End');
+  await syncPage.keyboard.insertText('\n本地待保存的编辑');
+  await syncPage.evaluate(() => window.__changeDisk('# 同时发生的外部编辑\n'));
+  await syncPage.waitForSelector('#file-sync-banner:not([hidden])');
+  await syncPage.waitForTimeout(850);
+  assert.ok((await syncPage.locator('.cm-content').textContent()).includes('本地待保存的编辑'));
+  assert.equal(await syncPage.evaluate(() => window.__disk[window.__activeDiskPath].content), '# 同时发生的外部编辑\n');
+  await syncPage.getByRole('button', { name: '查看并处理', exact: true }).click();
+  await syncPage.waitForSelector('#file-conflict-dialog[open]');
+  assert.ok((await syncPage.getByRole('textbox', { name: '当前本地内容' }).inputValue()).includes('本地待保存的编辑'));
+  await syncPage.screenshot({ path: path.join(qa, 'file-sync-conflict.png') });
+  await syncPage.evaluate(() => window.__changeDisk('# 查看冲突期间再次更新\n'));
+  await syncPage.getByRole('button', { name: '使用本地版本', exact: true }).click();
+  await syncPage.waitForFunction(() => document.querySelector('#toast').textContent.includes('请重新查看'));
+  assert.equal(await syncPage.evaluate(() => window.__disk[window.__activeDiskPath].content), '# 查看冲突期间再次更新\n');
+  await syncPage.getByRole('button', { name: '查看并处理', exact: true }).click();
+  await syncPage.getByRole('button', { name: '使用外部版本', exact: true }).click();
+  await syncPage.waitForFunction(() => document.querySelector('.cm-content').textContent.includes('查看冲突期间再次更新') && document.querySelector('#file-sync-banner').hidden);
+  await syncPage.waitForFunction(() => window.__session.documents.some(doc => doc.name.includes('本地冲突副本') && !doc.path && doc.content.includes('本地待保存的编辑')));
+  console.log('PASS simultaneous edits pause writes; conflict review preserves a local recovery draft');
+
+  await syncPage.locator('.cm-content').click(); await syncPage.keyboard.press('Control+End');
+  await syncPage.keyboard.insertText('\n选择保留本地');
+  await syncPage.evaluate(() => window.__changeDisk('# 第二次外部冲突\n'));
+  await syncPage.waitForSelector('#file-sync-banner:not([hidden])');
+  await syncPage.getByRole('button', { name: '查看并处理', exact: true }).click();
+  await syncPage.getByRole('button', { name: '使用本地版本', exact: true }).click();
+  await syncPage.waitForFunction(() => window.__disk[window.__activeDiskPath].content.includes('选择保留本地') && document.querySelector('#file-sync-banner').hidden);
+  await syncPage.evaluate(() => window.__changeDisk(null));
+  await syncPage.waitForSelector('#file-sync-banner:not([hidden])');
+  assert.ok((await syncPage.locator('.cm-content').textContent()).includes('选择保留本地'));
+  await syncPage.locator('.cm-content').click(); await syncPage.keyboard.press('Control+End');
+  await syncPage.keyboard.insertText('\n删除期间的编辑');
+  await syncPage.waitForTimeout(850);
+  assert.equal(await syncPage.evaluate(() => Boolean(window.__disk[window.__activeDiskPath])), false);
+  await syncPage.getByRole('button', { name: '重新创建文件', exact: true }).click();
+  await syncPage.waitForFunction(() => window.__disk[window.__activeDiskPath]?.content.includes('删除期间的编辑') && document.querySelector('#file-sync-banner').hidden);
+  await syncPage.screenshot({ path: path.join(qa, 'auto-save.png') });
+  console.log('PASS explicit local resolution and missing-file recreation resume automatic saves');
+
+  await syncPage.locator('.cm-content').click(); await syncPage.keyboard.press('Control+End');
+  await syncPage.keyboard.insertText('\n切换标签补存');
+  await syncPage.locator('.tab-title[data-doc="rich"]').click();
+  await syncPage.waitForFunction(() => window.__disk[window.__activeDiskPath]?.content.includes('切换标签补存'));
+  await syncPage.locator('.tab-title[data-doc="plain"]').click();
+  await syncPage.locator('.cm-content').click(); await syncPage.keyboard.press('Control+End');
+  await syncPage.keyboard.insertText('\n失焦补存');
+  await syncPage.evaluate(() => window.dispatchEvent(new Event('blur')));
+  await syncPage.waitForFunction(() => window.__disk[window.__activeDiskPath]?.content.includes('失焦补存'));
+  await syncPage.keyboard.insertText('\n退出前补存');
+  await syncPage.evaluate(() => window.__emitHost({ event: 'closing' }));
+  await syncPage.waitForFunction(() => window.__nativeCalls.some(call => call.method === 'confirmClose' && call.params.documents.some(doc => doc.id === 'plain' && doc.content.includes('退出前补存') && doc.savedContent === doc.content)));
+  console.log('PASS live editing, tab switches, blur and close flush to disk automatically');
+
+  await syncPage.locator('.cm-content').click(); await syncPage.keyboard.press('Control+End');
+  await syncPage.keyboard.insertText('\n关闭标签前补存');
+  await syncPage.locator('.doc-tab.active [data-close]').click();
+  await syncPage.waitForFunction(() => !document.querySelector('[data-doc="plain"]') && window.__disk[window.__activeDiskPath]?.content.includes('关闭标签前补存'));
+  assert.equal(await syncPage.locator('#confirm-dialog[open]').count(), 0);
+  assert.equal(await syncPage.evaluate(() => window.__watchedPaths.length), 0);
+  console.log('PASS closing a bound tab flushes it and releases its file subscription');
+
+  const restoredPage = await context.newPage();
+  restoredPage.on('pageerror', error => errors.push(error.message));
+  await restoredPage.goto(origin + '/?restore=clean');
+  await restoredPage.waitForFunction(() => document.querySelector('.cm-content')?.textContent.includes('启动前的外部修改'));
+  await restoredPage.close();
+  const recoveredPage = await context.newPage();
+  recoveredPage.on('pageerror', error => errors.push(error.message));
+  await recoveredPage.goto(origin + '/?restore=dirty');
+  await recoveredPage.waitForSelector('#file-sync-banner:not([hidden])');
+  assert.ok((await recoveredPage.locator('.cm-content').textContent()).includes('恢复的本地编辑'));
+  assert.equal(await recoveredPage.evaluate(() => window.__disk['D:\\tests\\restored.md'].content), '# 启动前的外部修改\n');
+  await recoveredPage.close();
+  await syncPage.close();
+  console.log('PASS startup rechecks disk before saving recovered drafts');
   assert.deepEqual(errors, [], 'no uncaught browser errors');
   console.log('PASS dark theme, keyboard modes and compact layout; no uncaught JavaScript errors');
-  await fs.writeFile(path.join(qa, 'browser-results.json'), JSON.stringify({ passed: 12, errors, images, checkedAt: new Date().toISOString() }, null, 2));
+  await fs.writeFile(path.join(qa, 'browser-results.json'), JSON.stringify({ passed: 19, errors, images, checkedAt: new Date().toISOString() }, null, 2));
 } finally {
   if (browser) await browser.close();
   await new Promise(resolve => server.close(resolve));

@@ -51,6 +51,7 @@ class NativeTests
         Check(!FileStore.Within(Path.Combine(folder, "..", "outside.md"), folder), "parent traversal rejected");
         Check(!FileStore.Within(folder + "-other\\test.md", folder), "directory prefix collision rejected");
         IntegrationTests.Run(Check, folder);
+        SynchronizationTests.Run(Check, folder);
         Console.WriteLine(checks + " native checks passed.");
     }
 }

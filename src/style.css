@@ -108,6 +108,14 @@ button { -webkit-tap-highlight-color: transparent; }
 .offline-dot { width: 5px; height: 5px; background: #6d9271; border-radius: 50%; display: inline-block; margin-right: 6px; }
 .side-bottom .icon-btn { width: 25px; height: 25px; }
 .main { min-width: 0; min-height: 0; display: flex; flex-direction: column; background: var(--paper); }
+.file-sync-banner { display: flex; align-items: center; justify-content: space-between; gap: 12px; padding: 10px 20px; border-bottom: 1px solid var(--peer-border); background: var(--peer-bg); font-size: 12px; line-height: 1.7; }
+.file-sync-banner span { overflow-wrap: anywhere; }
+.file-sync-banner > div { display: flex; flex-shrink: 0; gap: 8px; }
+.file-sync-banner button { border: 1px solid var(--border); border-radius: 4px; padding: 4px 8px; background: var(--paper); }
+#file-conflict-dialog { width: 900px; }
+.conflict-columns { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 16px; }
+.conflict-columns label { font-size: 12px; color: var(--muted); }
+.conflict-columns textarea { display: block; width: 100%; height: min(45vh, 400px); margin-top: 10px; padding: 12px; resize: none; color: var(--text); background: var(--sidebar); border: 1px solid var(--border); border-radius: 5px; font: 13px/1.8 Consolas, "Microsoft YaHei", monospace; }
 .topbar { height: 72px; min-height: 72px; display: flex; align-items: center; padding: 0 21px; gap: 15px; border-bottom: 1px solid var(--border); position: relative; z-index: 10; }
 .doc-meta { display: flex; flex-direction: column; gap: 6px; flex: 1; min-width: 80px; }
 .doc-title { display: flex; align-items: center; gap: 7px; font-size: 13px; font-weight: 600; }

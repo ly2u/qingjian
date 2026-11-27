@@ -53,7 +53,7 @@ $compiler = Join-Path $framework 'csc.exe'
 $core = Join-Path $webview 'lib\net462\Microsoft.Web.WebView2.Core.dll'
 $forms = Join-Path $webview 'lib\net462\Microsoft.Web.WebView2.WinForms.dll'
 $exe = Join-Path $output '轻笺.exe'
-& $compiler /nologo /target:winexe /platform:x64 /optimize+ /utf8output /codepage:65001 "/out:$exe" "/win32icon:$iconFile" "/win32manifest:$(Join-Path $projectRoot 'native\app.manifest')" /reference:System.dll /reference:System.Core.dll /reference:System.Windows.Forms.dll /reference:System.Drawing.dll /reference:System.Web.Extensions.dll "/reference:$core" "/reference:$forms" (Join-Path $projectRoot 'native\Program.cs') (Join-Path $projectRoot 'native\FileStore.cs') (Join-Path $projectRoot 'native\SystemIntegration.cs') (Join-Path $projectRoot 'native\SingleInstance.cs')
+& $compiler /nologo /target:winexe /platform:x64 /optimize+ /utf8output /codepage:65001 "/out:$exe" "/win32icon:$iconFile" "/win32manifest:$(Join-Path $projectRoot 'native\app.manifest')" /reference:System.dll /reference:System.Core.dll /reference:System.Windows.Forms.dll /reference:System.Drawing.dll /reference:System.Web.Extensions.dll "/reference:$core" "/reference:$forms" (Join-Path $projectRoot 'native\Program.cs') (Join-Path $projectRoot 'native\FileStore.cs') (Join-Path $projectRoot 'native\FileSynchronization.cs') (Join-Path $projectRoot 'native\SystemIntegration.cs') (Join-Path $projectRoot 'native\SingleInstance.cs')
 if ($LASTEXITCODE -ne 0) { throw 'Windows 程序编译失败' }
 Copy-Item -LiteralPath $core, $forms -Destination $output -Force
 Copy-Item -LiteralPath (Join-Path $webview 'runtimes\win-x64\native\WebView2Loader.dll') -Destination $output -Force

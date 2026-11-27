@@ -13,6 +13,7 @@ import { sample } from './sample.mjs';
 import { enhancePreview } from './enhance.mjs';
 import { peerRangeField, showPeerRange, correspondingElement } from './correspondence.mjs';
 import { liveConfiguration, liveInteraction, livePreviewExtensions, liveHeadings } from './live-preview.mjs';
+import { createFileSynchronizer, sourceChange } from './file-sync.mjs';
 
 const $ = selector => document.querySelector(selector);
 const html = escapeHTML;
@@ -27,6 +28,7 @@ let headings = [], sideTab = 'files', filter = '', renderTimer, persistTimer, to
 let persistChain = Promise.resolve(), scrollPairs = [], scrollOwner = null, mapFrame, lastDraftTime = null;
 let assetGeneration = 0;
 let previewGeneration = 0, pendingPreview = Promise.resolve(), peerFrame, peerScrollTimer;
+let watchChain = Promise.resolve(), watchKey = '', closing = false;
 const active = () => documents.find(doc => doc.id === activeId);
 const dirty = doc => doc.content !== doc.savedContent;
 const projectURL = 'https://github.com/ly2u/qingjian';
@@ -63,6 +65,7 @@ $('#app').innerHTML = `
       </div>
     </header>
     <div class="tabbar" id="tabbar" aria-label="打开的文档"></div>
+    <div class="file-sync-banner" id="file-sync-banner" role="status" hidden></div>
     <nav class="toolbar" aria-label="Markdown 格式工具">
       <select id="heading-select" aria-label="设置标题级别"><option value="">正文</option><option value="1">一级标题</option><option value="2">二级标题</option><option value="3">三级标题</option><option value="4">四级标题</option><option value="0">清除标题</option></select>
       <span class="tool-separator"></span>
@@ -83,6 +86,101 @@ $('#app').innerHTML = `
   </main>
   <footer class="statusbar"><div class="status-left"><span id="draft-state">${icon('check')}本地草稿就绪</span></div><div class="status-right"><span id="character-count"></span><span id="cursor-position">行 1，列 1</span><span id="file-encoding">UTF-8</span><span id="line-ending">LF</span><span class="status-mode">Markdown</span></div></footer>
 </div>`;
+
+const fileSync = createFileSynchronizer({
+  documents: () => documents,
+  request,
+  onUpdate: updateFileSync,
+  canSave: doc => doc.id !== activeId || !view?.composing
+});
+
+function updateFileSync(doc, { contentChanged = false } = {}) {
+  if (contentChanged) {
+    const previous = doc.id === activeId ? view?.state : editorStates.get(doc.id);
+    if (previous) {
+      const changes = previous.changes(sourceChange(previous.doc.toString(), doc.content));
+      const next = editorState(doc.content).update({ selection: previous.selection.map(changes) }).state;
+      editorStates.set(doc.id, next);
+      if (doc.id === activeId && view) {
+        const scrollTop = view.scrollDOM.scrollTop;
+        view.setState(next);
+        view.requestMeasure({ write: () => { if (doc.id === activeId) view.scrollDOM.scrollTop = scrollTop; } });
+        updateCursor(); renderPreview();
+      }
+    }
+  }
+  renderTabs(); renderFiles(); updateMeta(); schedulePersist();
+}
+
+function updateWatchedFiles() {
+  if (!isDesktop) return Promise.resolve();
+  watchChain = watchChain.catch(() => {}).then(async () => {
+    const bound = documents.filter(doc => doc.path);
+    const paths = [...new Set(bound.map(doc => doc.path))].sort();
+    const key = JSON.stringify(paths);
+    if (key !== watchKey) { await request('watchFiles', { paths }); watchKey = key; }
+    await Promise.all(bound.filter(doc => !fileSync.state(doc).initialized).map(doc => fileSync.check(doc)));
+  });
+  return watchChain;
+}
+
+async function flushBoundDocuments() {
+  if (!isDesktop) return;
+  await Promise.all(documents.filter(doc => doc.path && !fileSync.state(doc).issue).map(doc => fileSync.flush(doc)));
+}
+
+function renderFileSyncBanner(doc) {
+  const banner = $('#file-sync-banner');
+  const issue = isDesktop && doc.path ? fileSync.state(doc).issue : null;
+  banner.hidden = !issue;
+  if (!issue) { banner.replaceChildren(); return; }
+  const message = issue.kind === 'conflict' ? '本地与外部都有修改，已暂停自动保存。你的编辑仍然保留。'
+    : issue.kind === 'missing' ? '源文件已被移走或删除，已保留当前内容并暂停自动保存。'
+    : `文件暂时无法读写，已保留当前内容。${issue.message || ''}`;
+  const action = issue.kind === 'conflict' ? '<button data-action="syncReview">查看并处理</button>'
+    : issue.kind === 'missing' ? '<button data-action="syncRecreate">重新创建文件</button><button data-action="syncRetry">重新检查</button>'
+    : '<button data-action="syncRetry">重试</button>';
+  banner.innerHTML = `<span>${html(message)}</span><div>${action}<button data-action="saveAs">另存为</button></div>`;
+}
+
+async function resolveFileIssue(doc = active()) {
+  if (!doc?.path) return false;
+  await fileSync.check(doc);
+  const issue = fileSync.state(doc).issue;
+  if (!issue) return fileSync.flush(doc);
+  if (issue.kind !== 'conflict') return false;
+  const file = issue.file;
+  const dialog = $('#file-conflict-dialog');
+  if (dialog.open) return false;
+  dialog.innerHTML = `<div class="dialog-title"><h2 id="file-conflict-title">处理文件冲突</h2></div><p class="dialog-caption">${html(doc.name)} 在两处发生了修改。使用外部版本时，本地内容会保留为另一份未命名草稿；使用本地版本会替换下方的外部版本。</p><div class="conflict-columns"><label>当前本地内容<textarea readonly aria-label="当前本地内容"></textarea></label><label>外部文件内容<textarea readonly aria-label="外部文件内容"></textarea></label></div><form method="dialog" class="dialog-actions"><button value="cancel" autofocus>稍后处理</button><button value="external">使用外部版本</button><button value="local" class="primary">使用本地版本</button></form>`;
+  dialog.querySelector('[aria-label="当前本地内容"]').value = doc.content;
+  dialog.querySelector('[aria-label="外部文件内容"]').value = file.content;
+  const choice = await new Promise(resolve => {
+    dialog.returnValue = 'cancel';
+    dialog.addEventListener('close', () => resolve(dialog.returnValue), { once: true });
+    dialog.showModal();
+  });
+  if (choice === 'local') {
+    const saved = await fileSync.synchronize(doc, { write: true, overwriteStamp: file.stamp });
+    if (!saved) toast('文件仍有变化或无法保存，请重新查看。');
+    return saved;
+  }
+  if (choice === 'external') {
+    await fileSync.check(doc);
+    const latest = fileSync.state(doc).issue;
+    if (!latest) return !dirty(doc);
+    if (latest.kind !== 'conflict' || latest.file.stamp !== file.stamp) { toast('外部文件又发生了变化，请重新查看。'); return false; }
+    const copy = newDocument(doc.content, doc.name.replace(/\.[^.]+$/, '') + '（本地冲突副本）.md');
+    documents.push(copy);
+    Object.assign(doc, { content: file.content, savedContent: file.content, stamp: file.stamp, encoding: file.encoding, lineEnding: file.lineEnding });
+    fileSync.state(doc).issue = null;
+    updateFileSync(doc, { contentChanged: true });
+    await persistNow();
+    toast('已载入外部版本，本地编辑保留在“本地冲突副本”标签中');
+    return true;
+  }
+  return false;
+}
 
 const highlightStyle = HighlightStyle.define([
   { tag: tags.heading, color: '#668052', fontWeight: '600' },
@@ -128,9 +226,11 @@ function editorState(content) {
       if (update.docChanged) {
         const wasDirty = dirty(doc);
         doc.content = update.state.doc.toString();
-        if (dirty(doc) !== wasDirty) { renderTabs(); renderFiles(); updateMeta(); }
+        if (dirty(doc) !== wasDirty) { renderTabs(); renderFiles(); }
+        updateMeta();
         $('#character-count').textContent = `${countCharacters(doc.content).toLocaleString()} 字符`;
         scheduleRender(); schedulePersist();
+        if (isDesktop && !closing) fileSync.schedule(doc);
       }
       if (update.selectionSet || update.docChanged) { updateCursor(); schedulePeerHighlight(update.selectionSet && !update.docChanged && update.view.hasFocus); }
       if (update.geometryChanged || update.viewportChanged) scheduleMap();
@@ -187,7 +287,16 @@ function updateMeta() {
   $('#doc-name').textContent = doc.name;
   $('#doc-name').title = doc.path || doc.name;
   $('#dirty-indicator').hidden = !dirty(doc);
-  $('#doc-state').textContent = dirty(doc) ? '有更改尚未保存到文件' : doc.path ? '文件已保存' : '本地文档 · Ctrl+S 保存到文件';
+  const syncState = isDesktop && doc.path ? fileSync.state(doc) : null;
+  $('#doc-state').textContent = syncState?.issue ? '自动保存已暂停 · 当前内容已保留'
+    : syncState && !syncState.initialized ? '正在检查文件版本…'
+    : syncState?.saving ? '正在保存到文件…'
+    : syncState ? (dirty(doc) ? '等待自动保存…' : '已保存 · 自动保存已开启')
+    : '本地草稿 · Ctrl+S 选择保存位置';
+  renderFileSyncBanner(doc);
+  const saveButton = $('.save-btn');
+  saveButton.innerHTML = `${icon('save')}${doc.path ? '立即保存' : '保存'}`;
+  saveButton.title = doc.path ? '立即保存 (Ctrl+S) · 平时自动保存' : '选择文件位置 (Ctrl+S)';
   $('#file-encoding').textContent = doc.encoding;
   $('#line-ending').textContent = doc.lineEnding;
   $('#character-count').textContent = `${countCharacters(doc.content).toLocaleString()} 字符`;
@@ -238,6 +347,8 @@ function renderOutline() {
 async function activateDocument(id, focus = true) {
   const doc = documents.find(item => item.id === id);
   if (!doc) return;
+  const previous = active();
+  if (isDesktop && previous?.path && previous.id !== id && !fileSync.state(previous).issue) fileSync.flush(previous).catch(reportError);
   if (view && activeId) editorStates.set(activeId, view.state);
   activeId = id;
   const state = editorStates.get(id) || editorState(doc.content);
@@ -254,6 +365,7 @@ async function activateDocument(id, focus = true) {
   renderPreview();
   if (focus && settings.mode !== 'preview') view.focus();
   schedulePersist();
+  if (isDesktop && doc.path && fileSync.state(doc).initialized) fileSync.check(doc).catch(reportError);
   const generation = ++assetGeneration;
   if (doc.path && !doc.assetBase) {
     try {
@@ -268,12 +380,13 @@ async function addFile(file) {
   if (!file) return;
   if (file.recent) recent = file.recent;
   const existing = file.path && documents.find(doc => doc.path?.toLowerCase() === file.path.toLowerCase());
-  if (existing) { await activateDocument(existing.id); return; }
+  if (existing) { await activateDocument(existing.id); if (isDesktop) await fileSync.check(existing); return; }
   const content = normalizeText(file.content);
   const doc = { ...newDocument(content, file.name || displayName(file.path), content), ...file, content, savedContent: content, id: crypto.randomUUID() };
   delete doc.recent;
   documents.push(doc);
   await activateDocument(doc.id);
+  await updateWatchedFiles();
 }
 
 async function openFile() {
@@ -289,18 +402,30 @@ async function openFile() {
 
 async function saveDocument(doc = active(), saveAs = false) {
   if (!doc) return false;
-  const savedText = doc.content;
-  const saved = await request('saveFile', { ...doc, saveAs });
-  if (!saved) return false;
-  doc.path = saved.path;
-  doc.name = saved.name || doc.name;
-  doc.stamp = saved.stamp;
-  doc.assetBase = saved.assetBase || '';
-  doc.savedContent = savedText;
-  if (saved.recent) recent = saved.recent;
+  if (isDesktop && doc.path && !saveAs) {
+    const saved = await fileSync.flush(doc);
+    if (!saved && fileSync.state(doc).issue?.kind === 'conflict') return resolveFileIssue(doc);
+    if (!saved) toast('暂时无法保存，请使用文件提示中的操作，或另存为。');
+    return saved;
+  }
+  const result = await fileSync.exclusive(doc, async () => {
+    fileSync.stopTimer(doc);
+    const savedText = doc.content;
+    const saved = await request('saveFile', { ...doc, saveAs });
+    if (!saved) return null;
+    doc.path = saved.path;
+    doc.name = saved.name || doc.name;
+    doc.stamp = saved.stamp;
+    doc.assetBase = saved.assetBase || '';
+    doc.savedContent = savedText;
+    if (saved.recent) recent = saved.recent;
+    return saved;
+  });
+  if (!result) { if (isDesktop) fileSync.schedule(doc); return false; }
   renderTabs(); renderFiles(); updateMeta(); refreshLiveContext(); renderPreview();
+  await updateWatchedFiles();
   await persistNow();
-  toast(saved.browserDownload ? '已下载 Markdown 文件' : `已保存 ${doc.name}`);
+  toast(result.browserDownload ? '已下载 Markdown 文件' : `已保存 ${doc.name}，后续修改将自动保存`);
   if (workspace && doc.path && !workspace.files.some(file => file.path.toLowerCase() === doc.path.toLowerCase())) refreshFolder().catch(reportError);
   return true;
 }
@@ -308,18 +433,21 @@ async function saveDocument(doc = active(), saveAs = false) {
 async function closeDocument(id) {
   const doc = documents.find(item => item.id === id);
   if (!doc) return;
+  if (isDesktop && doc.path) await fileSync.flush(doc);
+  fileSync.pause(doc);
   if (dirty(doc)) {
     const choice = await confirmCloseDocument(doc.name);
-    if (choice === 'cancel') return;
-    if (choice === 'save' && !await saveDocument(doc)) return;
+    if (choice === 'cancel') { fileSync.pause(doc, false); return; }
+    if (choice === 'save' && !await saveDocument(doc)) { fileSync.pause(doc, false); return; }
   }
   const index = documents.indexOf(doc);
-  documents.splice(index, 1); editorStates.delete(id);
+  documents.splice(index, 1); editorStates.delete(id); fileSync.forget(doc);
   if (!documents.length) documents.push(newDocument());
   if (activeId === id) {
     activeId = null;
     await activateDocument(documents[Math.min(index, documents.length - 1)].id);
   } else { renderTabs(); renderFiles(); schedulePersist(); }
+  await updateWatchedFiles();
 }
 
 function confirmCloseDocument(name) {
@@ -510,7 +638,7 @@ async function exportHTML() {
 function showHelp() {
   const shortcuts = [ ['新建 / 打开文档', 'Ctrl N / Ctrl O'], ['保存 / 另存为', 'Ctrl S / Ctrl Shift S'], ['编辑 / 对照 / 预览', 'Ctrl 1 / 2 / 3'], ['实时编辑 / 恢复排版', 'Ctrl 4 / Esc'], ['查找 / 替换', 'Ctrl F / Ctrl H'], ['粗体 / 斜体 / 链接', 'Ctrl B / Ctrl I / Ctrl K'], ['撤销 / 重做', 'Ctrl Z / Ctrl Y'], ['专注写作', 'Ctrl Shift F'], ['关闭当前文档', 'Ctrl W'], ['打印 / 导出 PDF', 'Ctrl P'] ];
   const dialog = $('#help-dialog');
-  dialog.innerHTML = `<div class="dialog-title"><h2 id="help-title">轻笺，留一点空间给想法。</h2><form method="dialog">${btn('closeHelp', 'close', '关闭说明')}</form></div><p class="dialog-caption">一个安静、离线的 Markdown 编辑器 · v0.3.2</p>${shortcuts.map(([label, key]) => `<div class="shortcut-row"><span>${label}</span><kbd>${key}</kbd></div>`).join('')}<div class="dialog-foot">实时模式点击段落展开源码，Esc 恢复排版，Ctrl+单击可打开链接。<br>对照视图中，两边点击内容可互相定位并高亮。<br>公式使用 $…$ 或 $$…$$；图表使用 mermaid 代码块。<br>修改自动保留为草稿；保存原文件请按 Ctrl+S。<br>设置默认打开方式：更多选项 → Windows 文件关联。</div>`;
+  dialog.innerHTML = `<div class="dialog-title"><h2 id="help-title">轻笺，留一点空间给想法。</h2><form method="dialog">${btn('closeHelp', 'close', '关闭说明')}</form></div><p class="dialog-caption">一个安静、离线的 Markdown 编辑器 · v0.4.0</p>${shortcuts.map(([label, key]) => `<div class="shortcut-row"><span>${label}</span><kbd>${key}</kbd></div>`).join('')}<div class="dialog-foot">实时模式点击段落展开源码，Esc 恢复排版，Ctrl+单击可打开链接。<br>对照视图中，两边点击内容可互相定位并高亮。<br>公式使用 $…$ 或 $$…$$；图表使用 mermaid 代码块。<br>已绑定文件自动保存，并自动读取外部修改。<br>未命名文档首次按 Ctrl+S 选择保存位置；冲突时保留本地编辑。<br>设置默认打开方式：更多选项 → Windows 文件关联。</div>`;
   dialog.showModal();
 }
 
@@ -546,6 +674,9 @@ async function runAction(action) {
     case 'open': await openFile(); break;
     case 'save': await saveDocument(); break;
     case 'saveAs': await saveDocument(active(), true); break;
+    case 'syncReview': await resolveFileIssue(); break;
+    case 'syncRetry': await fileSync.check(active()); if (!fileSync.state(active()).issue) await fileSync.flush(active()); break;
+    case 'syncRecreate': if (fileSync.state(active()).issue?.kind === 'missing') await fileSync.synchronize(active(), { write: true, recreate: true }); break;
     case 'folder': {
       const result = await request('openFolder');
       if (result) { workspace = result; for (const doc of documents) doc.assetBase = ''; await activateDocument(activeId, false); renderFiles(); schedulePersist(); }
@@ -724,15 +855,24 @@ document.addEventListener('drop', async event => {
 
 onHostEvent(async event => {
   if (event.event === 'closing') {
-    try { await persistNow(); await request('confirmClose', makeSession()); }
+    closing = true;
+    try { await flushBoundDocuments(); await persistNow(); await request('confirmClose', makeSession()); }
     catch (error) { reportError(error); request('cancelClose').catch(() => {}); }
+    finally { closing = false; if (isDesktop) for (const doc of documents) fileSync.schedule(doc); }
   } else if (event.event === 'documentSaved') {
     const doc = documents.find(item => item.id === event.document.id);
     if (doc) { Object.assign(doc, event.document); updateMeta(); renderTabs(); renderFiles(); }
   } else if (event.event === 'openFiles') {
     for (const file of event.files) await addFile(file);
+  } else if (event.event === 'filesChanged') {
+    const paths = new Set((event.paths || []).map(path => path.toLowerCase()));
+    await Promise.all(documents.filter(doc => doc.path && paths.has(doc.path.toLowerCase())).map(doc => fileSync.check(doc)));
   }
 });
+
+window.addEventListener('blur', () => { if (!closing) flushBoundDocuments().catch(reportError); });
+document.addEventListener('visibilitychange', () => { if (document.hidden && !closing) flushBoundDocuments().catch(reportError); });
+$('#editor').addEventListener('compositionend', () => { if (isDesktop && active()?.path) fileSync.check(active()).catch(reportError); });
 
 window.addEventListener('beforeunload', () => { if (!isDesktop) { try { localStorage.setItem('qingjian.session', JSON.stringify(makeSession())); } catch { } } });
 
@@ -748,6 +888,7 @@ try {
   if (!documents.length) { const doc = newDocument(sample, '开始写作.md', sample); documents.push(doc); activeId = doc.id; }
   applySettings();
   await activateDocument(activeId, false);
+  await updateWatchedFiles();
   if (initial.fileToOpen) await addFile(initial.fileToOpen);
   for (const file of initial.filesToOpen || []) await addFile(file);
   if (initial.openErrors?.length) toast(initial.openErrors.join('；'));
