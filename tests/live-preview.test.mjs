@@ -3,13 +3,21 @@ import assert from 'node:assert/strict';
 import { EditorState } from '@codemirror/state';
 import { JSDOM } from 'jsdom';
 import { createPreview } from '../src/preview.mjs';
-import { indexLiveBlocks, liveConfiguration, liveInteraction, livePreviewState } from '../src/live-preview.mjs';
+import { indexLiveBlocks, liveConfiguration, liveInteraction, livePreviewState, liveHeadings } from '../src/live-preview.mjs';
 
 const { window } = new JSDOM('');
 const render = createPreview(window);
 const context = { enabled: true, enterActive: false, render, theme: 'light', assetBase: '' };
 const source = '# 标题\n\n第一段 **重点**。\n\n第二段。\n\n- 第一项\n- [ ] 第二项\n\n```js\nconst a = 1;\n```\n\n[ref]: https://example.com\n';
 function stateFor(text = source) { return EditorState.create({ doc: text, extensions: [liveConfiguration.of(context), livePreviewState] }); }
+
+test('live outline uses rendered titles and preserves repeated and setext headings', () => {
+  const text = '# **目录** &amp; `代码`\n\n## [章节](https://example.com)\n\n## [章节](https://example.com)\n\n附录\n----\n\n```md\n# 代码内的标题\n```\n';
+  const headings = liveHeadings(stateFor(text));
+  assert.deepEqual(headings.map(heading => heading.text), ['目录 & 代码', '章节', '章节', '附录']);
+  assert.deepEqual(headings.map(heading => heading.line), [1, 3, 5, 7]);
+  assert.equal(new Set(headings.map(heading => heading.id)).size, 4);
+});
 
 test('live block index preserves exact source offsets, list items and reference definitions', () => {
   const model = indexLiveBlocks(source, render.tokenize);

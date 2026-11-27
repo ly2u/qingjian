@@ -127,7 +127,7 @@ namespace Qingjian
                 Set(store, AppPaths + "\\" + name, "QingjianExecutable", exe);
             }
             Set(store, UninstallKey, "DisplayName", "轻笺（便携版系统注册）");
-            Set(store, UninstallKey, "DisplayVersion", "0.4.0");
+            Set(store, UninstallKey, "DisplayVersion", "0.4.1");
             Set(store, UninstallKey, "DisplayIcon", icon);
             Set(store, UninstallKey, "InstallLocation", Path.GetDirectoryName(exe));
             Set(store, UninstallKey, "UninstallString", "\"" + exe + "\" --unregister");

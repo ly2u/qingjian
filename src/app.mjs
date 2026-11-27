@@ -14,6 +14,7 @@ import { enhancePreview } from './enhance.mjs';
 import { peerRangeField, showPeerRange, correspondingElement } from './correspondence.mjs';
 import { liveConfiguration, liveInteraction, livePreviewExtensions, liveHeadings } from './live-preview.mjs';
 import { createFileSynchronizer, sourceChange } from './file-sync.mjs';
+import { outlineRows, headingAtLine } from './outline.mjs';
 
 const $ = selector => document.querySelector(selector);
 const html = escapeHTML;
@@ -23,12 +24,14 @@ const editorStates = new Map();
 const wrapSetting = new Compartment();
 const liveSetting = new Compartment();
 let documents = [], activeId, recent = [], workspace = null, view;
-let settings = { mode: 'split', theme: 'light', sync: true, sidebar: true, fontSize: 14, split: 50, wrap: true };
+let settings = { mode: 'split', theme: 'light', sync: true, sidebar: true, sideTab: 'files', fontSize: 14, split: 50, wrap: true };
 let headings = [], sideTab = 'files', filter = '', renderTimer, persistTimer, toastTimer;
 let persistChain = Promise.resolve(), scrollPairs = [], scrollOwner = null, mapFrame, lastDraftTime = null;
 let assetGeneration = 0;
 let previewGeneration = 0, pendingPreview = Promise.resolve(), peerFrame, peerScrollTimer;
 let watchChain = Promise.resolve(), watchKey = '', closing = false;
+let outlineItems = [], outlineFrame, outlineSource = 'cursor';
+const outlineFolds = new Map();
 const active = () => documents.find(doc => doc.id === activeId);
 const dirty = doc => doc.content !== doc.savedContent;
 const projectURL = 'https://github.com/ly2u/qingjian';
@@ -38,9 +41,9 @@ $('#app').innerHTML = `
   <aside class="sidebar" aria-label="文档导航">
     <div class="brand"><img src="icon.svg" alt=""><div><span class="brand-name">轻笺</span><span class="brand-note">QINGJIAN</span></div>${btn('sidebar', 'panel', '收起侧栏')}</div>
     <div class="side-actions"><button data-action="new">${icon('plus')}新建</button><button data-action="open">${icon('folderOpen')}打开</button></div>
-    <nav class="side-tabs" aria-label="侧栏视图"><button class="active" data-side="files">文档</button><button data-side="outline">大纲</button></nav>
+    <nav class="side-tabs" aria-label="侧栏视图"><button class="active" data-side="files" aria-controls="file-list" aria-pressed="true">文档</button><button data-side="outline" aria-controls="outline-list" aria-pressed="false" title="文档目录（大纲）">目录</button></nav>
     <label class="file-search">${icon('search')}<input id="file-filter" placeholder="筛选文档…" aria-label="筛选文档"></label>
-    <div class="side-scroll"><div id="file-list"></div><div id="outline-list" hidden></div></div>
+    <div class="side-scroll"><div id="file-list"></div><nav id="outline-list" aria-label="文档目录" hidden></nav></div>
     <div class="side-bottom"><span><i class="offline-dot"></i>本地写作 · 离线可用</span>${btn('help', 'keyboard', '快捷键与使用说明')}</div>
   </aside>
   <main class="main">
@@ -48,7 +51,7 @@ $('#app').innerHTML = `
       ${btn('sidebar', 'panel', '展开侧栏', 'id="show-sidebar"')}
       <div class="doc-meta"><div class="doc-title">${icon('file')}<span id="doc-name">开始写作.md</span><i id="dirty-indicator" class="dirty-dot" hidden></i></div><div class="doc-state" id="doc-state">准备就绪</div></div>
       <nav class="mode-switch" aria-label="编辑视图"><button data-mode="edit" title="编辑 (Ctrl+1)">编辑</button><button data-mode="split" class="active" title="左右对照 (Ctrl+2)">对照</button><button data-mode="live" title="实时编辑 (Ctrl+4)">实时</button><button data-mode="preview" title="预览 (Ctrl+3)">预览</button></nav>
-      <div class="top-tools">${btn('theme', 'moon', '切换深浅主题', 'id="theme-button"')}${btn('focus', 'focus', '专注写作 (Ctrl+Shift+F)', 'id="focus-button"')}${btn('menu', 'more', '更多选项', 'aria-haspopup="menu" aria-expanded="false" id="menu-button"')}<span class="tool-separator"></span><button class="save-btn" data-action="save" title="保存 (Ctrl+S)">${icon('save')}保存</button></div>
+      <div class="top-tools"><button class="outline-button" data-action="outline" id="outline-button" title="显示或收起目录 (Ctrl+Shift+O)" aria-label="目录" aria-controls="outline-list" aria-expanded="false">${icon('outline')}<span>目录</span></button>${btn('theme', 'moon', '切换深浅主题', 'id="theme-button"')}${btn('focus', 'focus', '专注写作 (Ctrl+Shift+F)', 'id="focus-button"')}${btn('menu', 'more', '更多选项', 'aria-haspopup="menu" aria-expanded="false" id="menu-button"')}<span class="tool-separator"></span><button class="save-btn" data-action="save" title="保存 (Ctrl+S)">${icon('save')}保存</button></div>
       <div class="menu-popover" id="more-menu" role="menu" hidden>
         <button data-action="saveAs" role="menuitem">${icon('save')}另存为<kbd>Ctrl Shift S</kbd></button>
         <button data-action="folder" role="menuitem">${icon('folderOpen')}打开文件夹</button>
@@ -233,6 +236,7 @@ function editorState(content) {
         if (isDesktop && !closing) fileSync.schedule(doc);
       }
       if (update.selectionSet || update.docChanged) { updateCursor(); schedulePeerHighlight(update.selectionSet && !update.docChanged && update.view.hasFocus); }
+      if (update.selectionSet || update.docChanged) scheduleOutlineHighlight('cursor');
       if (update.geometryChanged || update.viewportChanged) scheduleMap();
     })
   ] });
@@ -341,7 +345,102 @@ function renderFiles() {
 }
 
 function renderOutline() {
-  $('#outline-list').innerHTML = headings.length ? '<div class="section-label"><span>文档大纲</span></div>' + headings.map((heading, i) => `<button class="outline-item level-${heading.level}" data-heading="${i}" style="padding-left:${10 + Math.max(0, heading.level - 1) * 12}px" title="${html(heading.text)}">${html(heading.text)}</button>`).join('') : '<div class="empty-side">用 # 写下标题，<br>这里就会出现文档大纲。</div>';
+  if (!outlineFolds.has(activeId)) outlineFolds.set(activeId, new Set());
+  const collapsed = outlineFolds.get(activeId);
+  outlineItems = outlineRows(headings, collapsed);
+  const currentKeys = new Set(outlineItems.map(item => item.key));
+  for (const key of collapsed) if (!currentKeys.has(key)) collapsed.delete(key);
+  $('#outline-list').innerHTML = headings.length
+    ? `<div class="section-label"><span>文档目录 · ${headings.length}</span>${btn('expandOutline', 'outline', '全部展开')}${btn('collapseOutline', 'chevronDown', '全部收起')}</div>` + outlineItems.map(item => {
+      const title = item.text || '未命名标题';
+      const toggle = item.hasChildren ? `<button class="outline-fold icon-btn" data-fold="${item.index}" aria-expanded="${!item.collapsed}" aria-label="${item.collapsed ? '展开' : '收起'} ${html(title)} 的子标题" title="${item.collapsed ? '展开' : '收起'}子标题">${icon(item.collapsed ? 'chevron' : 'chevronDown')}</button>` : '<span class="outline-fold-spacer"></span>';
+      return `<div class="outline-row level-${item.level}" data-outline-row="${item.index}" style="padding-left:${Math.min(item.depth, 5) * 12}px" ${item.hidden ? 'hidden' : ''}>${toggle}<button class="outline-item" data-heading="${item.index}" title="${html(title)} · 第 ${item.line} 行"><span class="outline-level">H${item.level}</span><span class="outline-text">${html(title)}</span></button></div>`;
+    }).join('')
+    : '<div class="empty-side outline-empty">这份文档还没有标题。<br>用 #、##、### 写下标题，<br>这里会自动生成可跳转的目录。</div>';
+  scheduleOutlineHighlight(settings.mode === 'preview' ? 'preview' : outlineSource);
+}
+
+function sidebarVisible() {
+  const shell = $('.shell');
+  return !shell.classList.contains('focus-mode') && (window.innerWidth <= 880 ? shell.classList.contains('mobile-sidebar') : settings.sidebar);
+}
+
+function updateOutlineButton() {
+  const visible = sideTab === 'outline' && sidebarVisible();
+  $('#outline-button').classList.toggle('active', visible);
+  $('#outline-button').setAttribute('aria-expanded', String(visible));
+}
+
+function setSideTab(tab, persist = true) {
+  sideTab = settings.sideTab = tab === 'outline' ? 'outline' : 'files';
+  document.querySelectorAll('[data-side]').forEach(item => {
+    item.classList.toggle('active', item.dataset.side === sideTab);
+    item.setAttribute('aria-pressed', String(item.dataset.side === sideTab));
+  });
+  $('#file-list').hidden = sideTab !== 'files'; $('#outline-list').hidden = sideTab !== 'outline'; $('.file-search').hidden = sideTab !== 'files';
+  updateOutlineButton();
+  scheduleOutlineHighlight(settings.mode === 'preview' ? 'preview' : outlineSource, true);
+  if (persist) schedulePersist();
+}
+
+function setSidebarVisible(visible) {
+  settings.sidebar = visible;
+  const shell = $('.shell');
+  shell.classList.toggle('sidebar-hidden', !visible);
+  shell.classList.toggle('mobile-sidebar', visible && window.innerWidth <= 880);
+  shell.classList.remove('focus-mode');
+  $('#focus-button').classList.remove('active');
+  updateOutlineButton(); scheduleMap(); view?.requestMeasure(); schedulePersist();
+}
+
+function scheduleOutlineHighlight(source = outlineSource, reveal = false) {
+  outlineSource = source;
+  cancelAnimationFrame(outlineFrame);
+  outlineFrame = requestAnimationFrame(() => {
+    if (!view || sideTab !== 'outline' || !sidebarVisible()) return;
+    let index = -1;
+    if (source === 'preview' || settings.mode === 'preview') {
+      const top = $('#preview-scroll').getBoundingClientRect().top + 45;
+      for (let i = 0; i < headings.length; i++) {
+        const node = document.getElementById(headings[i].id);
+        if (node && node.getBoundingClientRect().top <= top) index = i;
+      }
+    } else {
+      let position = view.state.selection.main.head;
+      if (source === 'editor') {
+        const box = view.scrollDOM.getBoundingClientRect();
+        position = view.posAtCoords({ x: box.left + Math.min(100, box.width / 2), y: box.top + 15 }, false) ?? view.viewport.from;
+      }
+      index = headingAtLine(headings, view.state.doc.lineAt(position).number);
+    }
+    markOutlineChapter(index, reveal);
+  });
+}
+
+function markOutlineChapter(index, reveal = false) {
+  while (outlineItems[index]?.hidden) index = outlineItems[index].parent;
+  $('#outline-list').querySelectorAll('[data-heading]').forEach(button => {
+    const current = Number(button.dataset.heading) === index;
+    button.classList.toggle('active', current);
+    if (current) button.setAttribute('aria-current', 'location'); else button.removeAttribute('aria-current');
+  });
+  if (reveal) $('#outline-list [aria-current]')?.scrollIntoView({ block: 'nearest' });
+}
+
+function navigateHeading(index) {
+  const key = outlineItems[index]?.key;
+  if (renderTimer) {
+    renderPreview();
+    index = outlineItems.findIndex(item => item.key === key);
+  }
+  const heading = headings[index];
+  if (!heading || !view) return;
+  scrollOwner = 'outline';
+  const line = view.state.doc.line(Math.min(heading.line, view.state.doc.lines));
+  view.dispatch({ selection: { anchor: line.from }, effects: [EditorView.scrollIntoView(line.from, { y: 'start', yMargin: 20 }), liveInteraction.of(false)] });
+  if (settings.mode !== 'edit' && settings.mode !== 'live') document.getElementById(heading.id)?.scrollIntoView({ block: 'start' });
+  markOutlineChapter(index);
+  requestAnimationFrame(() => requestAnimationFrame(() => { if (scrollOwner === 'outline') scrollOwner = null; }));
 }
 
 async function activateDocument(id, focus = true) {
@@ -351,11 +450,16 @@ async function activateDocument(id, focus = true) {
   if (isDesktop && previous?.path && previous.id !== id && !fileSync.state(previous).issue) fileSync.flush(previous).catch(reportError);
   if (view && activeId) editorStates.set(activeId, view.state);
   activeId = id;
+  outlineSource = 'cursor';
   const state = editorStates.get(id) || editorState(doc.content);
   if (view) view.setState(state);
   else {
     view = new EditorView({ state, parent: $('#editor') });
-    view.scrollDOM.addEventListener('scroll', () => syncScroll('editor'), { passive: true });
+    view.scrollDOM.addEventListener('scroll', () => {
+      const following = scrollOwner && scrollOwner !== 'editor';
+      syncScroll('editor');
+      if (!following) scheduleOutlineHighlight('editor');
+    }, { passive: true });
     view.dom.addEventListener('pointerup', () => schedulePeerHighlight(true));
   }
   view.dispatch({ effects: wrapSetting.reconfigure(settings.wrap ? EditorView.lineWrapping : []) });
@@ -441,7 +545,7 @@ async function closeDocument(id) {
     if (choice === 'save' && !await saveDocument(doc)) { fileSync.pause(doc, false); return; }
   }
   const index = documents.indexOf(doc);
-  documents.splice(index, 1); editorStates.delete(id); fileSync.forget(doc);
+  documents.splice(index, 1); editorStates.delete(id); fileSync.forget(doc); outlineFolds.delete(id);
   if (!documents.length) documents.push(newDocument());
   if (activeId === id) {
     activeId = null;
@@ -462,7 +566,7 @@ function confirmCloseDocument(name) {
 
 function scheduleRender() { clearTimeout(renderTimer); renderTimer = setTimeout(renderPreview, 120); }
 function renderPreview({ force = false } = {}) {
-  clearTimeout(renderTimer);
+  clearTimeout(renderTimer); renderTimer = null;
   const doc = active();
   if (!doc) return;
   const generation = ++previewGeneration;
@@ -579,6 +683,7 @@ function format(action) {
 
 function setMode(mode) {
   settings.mode = mode;
+  if (outlineSource === 'preview' && mode !== 'preview') outlineSource = 'editor';
   $('.workspace').dataset.mode = mode;
   refreshLiveContext();
   $('.editor-panel .pane-label').innerHTML = `${icon('code')}${mode === 'live' ? '实时编辑' : 'MARKDOWN'}`;
@@ -589,7 +694,7 @@ function setMode(mode) {
     button.classList.toggle('active', button.dataset.mode === mode);
     button.setAttribute('aria-pressed', String(button.dataset.mode === mode));
   });
-  if (mode !== 'edit') renderPreview();
+  renderPreview();
   requestAnimationFrame(() => { view?.requestMeasure(); scheduleMap(); });
   schedulePersist();
 }
@@ -604,6 +709,7 @@ function applySettings() {
   document.documentElement.style.setProperty('--reading-size', `${settings.fontSize + 2}px`);
   document.documentElement.style.setProperty('--split', `${settings.split}%`);
   $('.shell').classList.toggle('sidebar-hidden', !settings.sidebar);
+  setSideTab(settings.sideTab, false);
   $('#font-size').textContent = settings.fontSize;
   $('#theme-button').innerHTML = icon(settings.theme === 'dark' ? 'sun' : 'moon');
   $('#sync-button').classList.toggle('active', settings.sync);
@@ -636,9 +742,9 @@ async function exportHTML() {
 }
 
 function showHelp() {
-  const shortcuts = [ ['新建 / 打开文档', 'Ctrl N / Ctrl O'], ['保存 / 另存为', 'Ctrl S / Ctrl Shift S'], ['编辑 / 对照 / 预览', 'Ctrl 1 / 2 / 3'], ['实时编辑 / 恢复排版', 'Ctrl 4 / Esc'], ['查找 / 替换', 'Ctrl F / Ctrl H'], ['粗体 / 斜体 / 链接', 'Ctrl B / Ctrl I / Ctrl K'], ['撤销 / 重做', 'Ctrl Z / Ctrl Y'], ['专注写作', 'Ctrl Shift F'], ['关闭当前文档', 'Ctrl W'], ['打印 / 导出 PDF', 'Ctrl P'] ];
+  const shortcuts = [ ['新建 / 打开文档', 'Ctrl N / Ctrl O'], ['保存 / 另存为', 'Ctrl S / Ctrl Shift S'], ['编辑 / 对照 / 预览', 'Ctrl 1 / 2 / 3'], ['实时编辑 / 恢复排版', 'Ctrl 4 / Esc'], ['查找 / 替换', 'Ctrl F / Ctrl H'], ['粗体 / 斜体 / 链接', 'Ctrl B / Ctrl I / Ctrl K'], ['撤销 / 重做', 'Ctrl Z / Ctrl Y'], ['显示 / 收起目录', 'Ctrl Shift O'], ['专注写作', 'Ctrl Shift F'], ['关闭当前文档', 'Ctrl W'], ['打印 / 导出 PDF', 'Ctrl P'] ];
   const dialog = $('#help-dialog');
-  dialog.innerHTML = `<div class="dialog-title"><h2 id="help-title">轻笺，留一点空间给想法。</h2><form method="dialog">${btn('closeHelp', 'close', '关闭说明')}</form></div><p class="dialog-caption">一个安静、离线的 Markdown 编辑器 · v0.4.0</p>${shortcuts.map(([label, key]) => `<div class="shortcut-row"><span>${label}</span><kbd>${key}</kbd></div>`).join('')}<div class="dialog-foot">实时模式点击段落展开源码，Esc 恢复排版，Ctrl+单击可打开链接。<br>对照视图中，两边点击内容可互相定位并高亮。<br>公式使用 $…$ 或 $$…$$；图表使用 mermaid 代码块。<br>已绑定文件自动保存，并自动读取外部修改。<br>未命名文档首次按 Ctrl+S 选择保存位置；冲突时保留本地编辑。<br>设置默认打开方式：更多选项 → Windows 文件关联。</div>`;
+  dialog.innerHTML = `<div class="dialog-title"><h2 id="help-title">轻笺，留一点空间给想法。</h2><form method="dialog">${btn('closeHelp', 'close', '关闭说明')}</form></div><p class="dialog-caption">一个安静、离线的 Markdown 编辑器 · v0.4.1</p>${shortcuts.map(([label, key]) => `<div class="shortcut-row"><span>${label}</span><kbd>${key}</kbd></div>`).join('')}<div class="dialog-foot">实时模式点击段落展开源码，Esc 恢复排版，Ctrl+单击可打开链接。<br>顶部“目录”可查看标题层级、折叠子章节并点击跳转。<br>对照视图中，两边点击内容可互相定位并高亮。<br>公式使用 $…$ 或 $$…$$；图表使用 mermaid 代码块。<br>已绑定文件自动保存，并自动读取外部修改。<br>未命名文档首次按 Ctrl+S 选择保存位置；冲突时保留本地编辑。<br>设置默认打开方式：更多选项 → Windows 文件关联。</div>`;
   dialog.showModal();
 }
 
@@ -674,6 +780,18 @@ async function runAction(action) {
     case 'open': await openFile(); break;
     case 'save': await saveDocument(); break;
     case 'saveAs': await saveDocument(active(), true); break;
+    case 'outline': {
+      const close = sideTab === 'outline' && sidebarVisible();
+      setSideTab('outline'); setSidebarVisible(!close);
+      if (!close) scheduleOutlineHighlight(settings.mode === 'preview' ? 'preview' : outlineSource, true);
+      break;
+    }
+    case 'expandOutline': outlineFolds.get(activeId)?.clear(); renderOutline(); break;
+    case 'collapseOutline': {
+      const collapsed = outlineFolds.get(activeId);
+      for (const item of outlineItems) if (item.hasChildren) collapsed?.add(item.key);
+      renderOutline(); break;
+    }
     case 'syncReview': await resolveFileIssue(); break;
     case 'syncRetry': await fileSync.check(active()); if (!fileSync.state(active()).issue) await fileSync.flush(active()); break;
     case 'syncRecreate': if (fileSync.state(active()).issue?.kind === 'missing') await fileSync.synchronize(active(), { write: true, recreate: true }); break;
@@ -691,13 +809,8 @@ async function runAction(action) {
     case 'wrap': settings.wrap = !settings.wrap; applySettings(); break;
     case 'fontPlus': settings.fontSize++; applySettings(); break;
     case 'fontMinus': settings.fontSize--; applySettings(); break;
-    case 'sidebar': {
-      if (window.innerWidth <= 880) $('.shell').classList.toggle('mobile-sidebar');
-      else { settings.sidebar = !settings.sidebar; $('.shell').classList.toggle('sidebar-hidden', !settings.sidebar); }
-      if ($('.shell').classList.contains('focus-mode')) $('.shell').classList.remove('focus-mode');
-      schedulePersist(); scheduleMap(); break;
-    }
-    case 'focus': $('.shell').classList.toggle('focus-mode'); $('#focus-button').classList.toggle('active', $('.shell').classList.contains('focus-mode')); scheduleMap(); view.requestMeasure(); break;
+    case 'sidebar': setSidebarVisible(!sidebarVisible()); if (sidebarVisible()) scheduleOutlineHighlight(settings.mode === 'preview' ? 'preview' : outlineSource, true); break;
+    case 'focus': $('.shell').classList.toggle('focus-mode'); $('#focus-button').classList.toggle('active', $('.shell').classList.contains('focus-mode')); updateOutlineButton(); scheduleMap(); view.requestMeasure(); break;
     case 'menu': $('#more-menu').hidden = !$('#more-menu').hidden; $('#menu-button').setAttribute('aria-expanded', String(!$('#more-menu').hidden)); break;
     case 'help': showHelp(); break;
     case 'closeHelp': $('#help-dialog').close(); break;
@@ -735,15 +848,12 @@ document.addEventListener('click', event => {
     if (existing) activateDocument(existing.id).catch(reportError);
     else request('openPath', { path: button.dataset.path }).then(addFile).catch(reportError);
   } else if (button.dataset.mode) setMode(button.dataset.mode);
-  else if (button.dataset.side) {
-    sideTab = button.dataset.side;
-    document.querySelectorAll('[data-side]').forEach(item => item.classList.toggle('active', item.dataset.side === sideTab));
-    $('#file-list').hidden = sideTab !== 'files'; $('#outline-list').hidden = sideTab !== 'outline'; $('.file-search').hidden = sideTab !== 'files';
+  else if (button.dataset.side) setSideTab(button.dataset.side);
+  else if (button.dataset.fold !== undefined) {
+    const item = outlineItems[Number(button.dataset.fold)], collapsed = outlineFolds.get(activeId);
+    if (item && collapsed) { if (collapsed.has(item.key)) collapsed.delete(item.key); else collapsed.add(item.key); renderOutline(); }
   } else if (button.dataset.heading !== undefined) {
-    const heading = headings[Number(button.dataset.heading)];
-    const line = view.state.doc.line(Math.min(heading.line, view.state.doc.lines));
-    view.dispatch({ selection: { anchor: line.from }, effects: [EditorView.scrollIntoView(line.from, { y: 'start', yMargin: 20 }), liveInteraction.of(true)] });
-    $(`#${heading.id}`)?.scrollIntoView({ block: 'start' });
+    navigateHeading(Number(button.dataset.heading));
   }
 });
 
@@ -755,7 +865,11 @@ $('#heading-select').addEventListener('change', event => {
   applyEdit(setHeading(view.state.doc.toString(), from, to, Number(event.target.value)));
   event.target.value = '';
 });
-$('#preview-scroll').addEventListener('scroll', () => syncScroll('preview'), { passive: true });
+$('#preview-scroll').addEventListener('scroll', () => {
+  const following = scrollOwner && scrollOwner !== 'preview';
+  syncScroll('preview');
+  if (!following) scheduleOutlineHighlight('preview');
+}, { passive: true });
 $('#preview').addEventListener('change', event => {
   const input = event.target.closest('input[data-task-offset]');
   if (!input) return;
@@ -799,7 +913,7 @@ document.addEventListener('keydown', event => {
   if (event.key === 'Escape') { $('#more-menu').hidden = true; return; }
   if (!event.ctrlKey || event.altKey || event.isComposing || document.querySelector('dialog[open]')) return;
   const key = event.key.toLowerCase();
-  const actions = { n: 'new', o: 'open', s: event.shiftKey ? 'saveAs' : 'save', p: 'print', w: 'close', f: event.shiftKey ? 'focus' : 'find', h: 'find' };
+  const actions = { n: 'new', o: event.shiftKey ? 'outline' : 'open', s: event.shiftKey ? 'saveAs' : 'save', p: 'print', w: 'close', f: event.shiftKey ? 'focus' : 'find', h: 'find' };
   if (['1', '2', '3', '4'].includes(key)) { event.preventDefault(); setMode({ 1: 'edit', 2: 'split', 3: 'preview', 4: 'live' }[key]); return; }
   if (key in actions && actions[key]) {
     event.preventDefault();
@@ -831,7 +945,7 @@ divider.addEventListener('keydown', event => {
   applySettings();
 });
 divider.addEventListener('dblclick', () => { settings.split = 50; applySettings(); });
-window.addEventListener('resize', scheduleMap);
+window.addEventListener('resize', () => { scheduleMap(); updateOutlineButton(); });
 
 let dragDepth = 0;
 document.addEventListener('dragenter', event => {

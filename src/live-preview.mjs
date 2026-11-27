@@ -200,11 +200,18 @@ export const livePreviewExtensions = [livePreviewState, EditorView.domEventHandl
   return true;
 } }])];
 
+const headingLabels = new WeakMap();
 export function liveHeadings(state) {
   const live = state.field(livePreviewState);
   if (!live.model) return [];
-  return live.model.blocks.filter(block => block.type === 'heading').map(block => ({
-    text: block.title.replace(/[*_`~]/g, ''), level: block.depth,
-    line: state.doc.lineAt(block.from).number, id: `qj-live-heading-${block.from}-0`
-  }));
+  let labels = headingLabels.get(live.context.render);
+  if (!labels) { labels = new Map(); headingLabels.set(live.context.render, labels); }
+  return live.model.blocks.filter(block => block.type === 'heading').map(block => {
+    if (!labels.has(block.raw)) {
+      labels.set(block.raw, live.context.render(block.raw).headings[0]?.text ?? block.title);
+      if (labels.size > 512) labels.delete(labels.keys().next().value);
+    }
+    return { text: labels.get(block.raw), level: block.depth,
+      line: state.doc.lineAt(block.from).number, id: `qj-live-heading-${block.from}-0` };
+  });
 }

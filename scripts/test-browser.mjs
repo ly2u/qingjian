@@ -29,13 +29,22 @@ try {
   const plain = '# 对照定位\n\n第一段：从一份普通笔记开始。\n\n第二段：在两侧点击，可以看见对应内容。\n\n- [ ] 一项待办\n';
   const liveText = '# 实时编辑\n\n第一段：保留 **粗体**，也保留 *斜体*。  \n\n第二段：点击这里，上一段恢复排版。\n\n- 第一项 **重点**\n- [ ] 第二项待办\n\n| A | B |\n| - | - |\n| 1 | 2 |\n\n行内公式 $E=mc^2$。\n\n```mermaid\nflowchart LR\n A["输入"] --> B["结果"]\n```\n';
   const rich = '# 公式与图表\n\n行内 $E=mc^2$ 与 \\(a^2+b^2=c^2\\)。\n\n$$\nx=\\frac{-b\\pm\\sqrt{b^2-4ac}}{2a}\n$$\n\n\\[\\int_0^1 x^2\\,dx=\\frac{1}{3}\\]\n\n```mermaid\nflowchart LR\n A["输入"] --> B["处理"] --> C["结果"]\n```\n\n```mermaid\nsequenceDiagram\n participant U as 用户\n participant Q as 轻笺\n U->>Q: 打开文档\n Q-->>U: 显示预览\n```\n\n```mermaid\ngantt\n title 项目计划\n dateFormat YYYY-MM-DD\n section 编写\n 初稿 :a, 2026-11-18, 2d\n 修改 :after a, 1d\n```\n\n```mermaid\nclassDiagram\n class Note {\n +String title\n +save()\n }\n```\n';
-  await context.addInitScript(({ plain, rich, liveText }) => {
+  const body = Array.from({ length: 8 }, (_, i) => `这是第 ${i + 1} 段正文，用来验证长文档章节定位。\n\n`).join('');
+  const outlineText = '# 项目计划\n\n' + body + '```md\n# 代码内标题不进入目录\n```\n\n## 第一章 **目标**\n\n' + body + '### 执行 [清单](https://example.com)\n\n' + body + '#### 四级标题\n\n' + body + '##### 五级标题\n\n' + body + '###### 六级标题\n\n' + body + '## 重复章节\n\n' + body + '## 重复章节\n\n' + body + '附录\n----\n\n' + body.repeat(3);
+  await context.addInitScript(({ plain, rich, liveText, outlineText }) => {
     const listeners = [];
     const documents = [{ id: 'plain', name: '对照定位.md', content: plain, savedContent: plain }, { id: 'rich', name: '公式与图表.md', content: rich, savedContent: rich }, { id: 'live-doc', name: '实时编辑.md', content: liveText, savedContent: liveText }];
     const session = { documents, activeId: 'plain', settings: { mode: 'split' } };
     window.__registrationOwner = '';
     window.__nativeCalls = [];
     window.__session = session;
+    if (location.search.includes('outline=')) {
+      documents.push({ id: 'outline-doc', name: '章节导航.md', content: outlineText, savedContent: outlineText });
+      session.activeId = 'outline-doc';
+    }
+    if (location.search.includes('outline=restore')) {
+      window.__session = JSON.parse(localStorage.getItem('test-outline-session')) || session;
+    }
     window.__disk = {};
     let revision = 0;
     const diskFile = (path, content) => ({ path, name: path.split('\\').pop(), content, encoding: 'UTF-8', lineEnding: 'LF', stamp: `revision-${++revision}` });
@@ -90,7 +99,7 @@ try {
         queueMicrotask(() => listeners.forEach(fn => fn({ data: { id: message.id, result } })));
       }
     };
-  }, { plain, rich, liveText });
+  }, { plain, rich, liveText, outlineText });
   const page = await context.newPage();
   const errors = [], requested = [];
   page.on('pageerror', error => errors.push(error.message));
@@ -363,9 +372,110 @@ try {
   await recoveredPage.close();
   await syncPage.close();
   console.log('PASS startup rechecks disk before saving recovered drafts');
+
+  const outlinePage = await context.newPage();
+  outlinePage.on('pageerror', error => errors.push(error.message));
+  await outlinePage.goto(origin + '/?outline=test');
+  await outlinePage.waitForSelector('.cm-content');
+  await outlinePage.locator('#outline-button').click();
+  await outlinePage.waitForSelector('#outline-list:not([hidden])');
+  assert.equal(await outlinePage.locator('.outline-item').count(), 9);
+  assert.equal(await outlinePage.locator('.outline-item').filter({ hasText: '代码内标题' }).count(), 0);
+  assert.equal(await outlinePage.locator('.outline-item').filter({ hasText: '重复章节' }).count(), 2);
+  await outlinePage.getByRole('button', { name: '收起 第一章 目标 的子标题', exact: true }).click();
+  assert.equal(await outlinePage.locator('.outline-row:not([hidden])').count(), 5);
+  await outlinePage.getByRole('button', { name: '展开 第一章 目标 的子标题', exact: true }).click();
+  assert.equal(await outlinePage.locator('.outline-row:not([hidden])').count(), 9);
+  await outlinePage.getByRole('button', { name: '全部收起', exact: true }).click();
+  assert.equal(await outlinePage.locator('.outline-row:not([hidden])').count(), 1);
+  await outlinePage.getByRole('button', { name: '全部展开', exact: true }).click();
+  assert.equal(await outlinePage.locator('.outline-row:not([hidden])').count(), 9);
+  console.log('PASS prominent outline entry, six levels, duplicate headings and folding');
+
+  await outlinePage.locator('[data-action="sync"]').click();
+  const secondDuplicate = outlineText.indexOf('## 重复章节', outlineText.indexOf('## 重复章节') + 1);
+  const duplicateLine = outlineText.slice(0, secondDuplicate).split('\n').length;
+  await outlinePage.locator('[data-heading="7"]').click();
+  await outlinePage.waitForFunction(line => document.querySelector('#cursor-position').textContent === `行 ${line}，列 1`, duplicateLine);
+  await outlinePage.waitForFunction(() => Math.abs(document.querySelector('#qj-heading-7').getBoundingClientRect().top - document.querySelector('#preview-scroll').getBoundingClientRect().top) < 24);
+  assert.ok(await outlinePage.locator('.cm-scroller').evaluate(node => node.scrollTop > 300));
+  await outlinePage.waitForSelector('[data-heading="7"][aria-current="location"]');
+  console.log('PASS outline jumps both split panes even when synchronized scrolling is off');
+
+  await outlinePage.locator('#outline-button').click();
+  await outlinePage.locator('.cm-scroller').evaluate(node => { node.scrollTop = 0; });
+  await outlinePage.waitForTimeout(100);
+  await outlinePage.locator('#outline-button').click();
+  await outlinePage.waitForSelector('[data-heading="0"][aria-current="location"]');
+
+  await outlinePage.locator('[data-mode="preview"]').click();
+  await outlinePage.locator('#preview-scroll').evaluate(pane => {
+    const target = document.getElementById('qj-heading-1');
+    pane.scrollTop += target.getBoundingClientRect().top - pane.getBoundingClientRect().top - 5;
+  });
+  await outlinePage.waitForSelector('[data-heading="1"][aria-current="location"]');
+  await outlinePage.locator('[data-heading="6"]').click();
+  await outlinePage.waitForFunction(() => Math.abs(document.querySelector('#qj-heading-6').getBoundingClientRect().top - document.querySelector('#preview-scroll').getBoundingClientRect().top) < 24);
+  assert.equal(await outlinePage.locator('.workspace').getAttribute('data-mode'), 'preview');
+  console.log('PASS preview scrolling highlights the current chapter and outline jumps preserve the view');
+
+  await outlinePage.locator('[data-mode="edit"]').click();
+  await outlinePage.locator('[data-heading="5"]').click();
+  await outlinePage.locator('.cm-content').focus();
+  await outlinePage.keyboard.press('End'); await outlinePage.keyboard.insertText('（已修改）');
+  await outlinePage.waitForFunction(() => document.querySelector('[data-heading="5"]').textContent.includes('已修改'));
+  await outlinePage.locator('[data-mode="live"]').click();
+  await outlinePage.waitForFunction(() => document.querySelector('[data-heading="2"]').textContent === 'H3执行 清单');
+  await outlinePage.locator('[data-heading="8"]').click();
+  await outlinePage.waitForSelector('[data-heading="8"][aria-current="location"]');
+  await outlinePage.waitForFunction(() => {
+    const heading = [...document.querySelectorAll('.qj-live-heading h2')].find(node => node.textContent === '附录');
+    if (!heading) return false;
+    const pane = document.querySelector('.cm-scroller').getBoundingClientRect(), box = heading.getBoundingClientRect();
+    return box.top >= pane.top - 5 && box.top < pane.bottom;
+  });
+  await outlinePage.screenshot({ path: path.join(qa, 'outline.png') });
+  console.log('PASS editing updates the outline and live mode preserves formatted heading labels');
+
+  await outlinePage.keyboard.press('Control+Shift+o');
+  await outlinePage.waitForFunction(() => document.querySelector('#outline-button').getAttribute('aria-expanded') === 'false');
+  await outlinePage.keyboard.press('Control+Shift+o');
+  await outlinePage.waitForFunction(() => document.querySelector('#outline-button').getAttribute('aria-expanded') === 'true');
+  await outlinePage.locator('[data-action="focus"]').click();
+  await outlinePage.locator('#outline-button').click();
+  assert.equal(await outlinePage.locator('.shell.focus-mode').count(), 0);
+  await outlinePage.locator('#theme-button').click();
+  await outlinePage.screenshot({ path: path.join(qa, 'outline-dark.png') });
+  await outlinePage.setViewportSize({ width: 900, height: 650 });
+  assert.ok(await outlinePage.locator('.topbar').evaluate(node => node.scrollWidth <= node.clientWidth + 1), 'header fits with the outline button');
+  await outlinePage.setViewportSize({ width: 860, height: 650 });
+  await outlinePage.locator('#outline-button').click();
+  await outlinePage.waitForFunction(() => document.querySelector('#outline-button').getAttribute('aria-expanded') === 'true');
+  assert.equal(await outlinePage.locator('.sidebar').evaluate(node => getComputedStyle(node).visibility), 'visible');
+  await outlinePage.screenshot({ path: path.join(qa, 'outline-compact.png') });
+  await outlinePage.waitForFunction(() => window.__session.settings.sideTab === 'outline' && window.__session.settings.sidebar);
+  await outlinePage.evaluate(() => localStorage.setItem('test-outline-session', JSON.stringify(window.__session)));
+  const outlineRestored = await context.newPage();
+  outlineRestored.on('pageerror', error => errors.push(error.message));
+  await outlineRestored.goto(origin + '/?outline=restore');
+  await outlineRestored.waitForSelector('#outline-list:not([hidden])');
+  assert.equal(await outlineRestored.locator('#outline-button').getAttribute('aria-expanded'), 'true');
+  await outlineRestored.close();
+  console.log('PASS outline shortcut, focus mode, dark theme, compact layout and restored preference');
+
+  await outlinePage.setViewportSize({ width: 1440, height: 950 });
+  await outlinePage.keyboard.press('Control+s');
+  await outlinePage.waitForFunction(() => document.querySelector('#doc-state').textContent.includes('自动保存已开启'));
+  await outlinePage.evaluate(() => window.__changeDisk('# 同步后的目录\n\n## 新章节\n'));
+  await outlinePage.waitForFunction(() => document.querySelectorAll('.outline-item').length === 2 && document.querySelector('.outline-item').textContent.includes('同步后的目录'));
+  await outlinePage.locator('.side-actions [data-action="new"]').click();
+  await outlinePage.waitForSelector('.outline-empty');
+  assert.equal(await outlinePage.locator('.outline-item').count(), 0);
+  await outlinePage.close();
+  console.log('PASS external changes rebuild the outline and untitled documents show heading guidance');
   assert.deepEqual(errors, [], 'no uncaught browser errors');
   console.log('PASS dark theme, keyboard modes and compact layout; no uncaught JavaScript errors');
-  await fs.writeFile(path.join(qa, 'browser-results.json'), JSON.stringify({ passed: 19, errors, images, checkedAt: new Date().toISOString() }, null, 2));
+  await fs.writeFile(path.join(qa, 'browser-results.json'), JSON.stringify({ passed: 25, errors, images, checkedAt: new Date().toISOString() }, null, 2));
 } finally {
   if (browser) await browser.close();
   await new Promise(resolve => server.close(resolve));

@@ -101,9 +101,20 @@ button { -webkit-tap-highlight-color: transparent; }
 .empty-side { color: var(--muted); padding: 18px 20px; font-size: 12px; line-height: 1.9; }
 .folder-entry { display: flex; align-items: center; gap: 8px; width: calc(100% - 28px); margin: 15px 14px 4px; padding: 12px 10px; text-align: left; border: 1px dashed var(--subtle); border-radius: 6px; color: var(--muted); font-size: 11px; }
 .folder-entry:hover { color: var(--accent); border-color: var(--accent); }
-.outline-item { display: block; width: calc(100% - 20px); margin: 1px 10px; text-align: left; padding: 9px 10px; color: var(--muted); border-radius: 5px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; font-size: 12px; }
+.outline-row { display: flex; align-items: center; margin: 2px 8px; min-width: 0; }
+.outline-fold.icon-btn, .outline-fold-spacer { width: 20px; height: 28px; flex: 0 0 20px; }
+.outline-fold .icon { width: 12px; height: 12px; }
+.outline-item { display: flex; flex: 1; align-items: center; gap: 6px; min-width: 0; text-align: left; padding: 8px 6px; color: var(--muted); border-radius: 5px; font-size: 12px; }
+.outline-text { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.outline-level { font-size: 9px; color: var(--subtle); flex-shrink: 0; font-weight: 400; }
 .outline-item:hover { color: var(--accent); background: var(--hover); }
-.outline-item.level-1 { color: var(--text); font-weight: 600; }
+.outline-row.level-1 .outline-item { color: var(--text); font-weight: 600; }
+.outline-row .outline-item.active { color: var(--accent); background: var(--active); box-shadow: inset 2px 0 0 var(--accent); }
+.outline-empty { line-height: 2.1; }
+.outline-button { display: inline-flex; align-items: center; gap: 5px; padding: 7px 8px; color: var(--muted); border-radius: 5px; white-space: nowrap; font-size: 12px; }
+.outline-button .icon { width: 16px; height: 16px; }
+.outline-button:hover { background: var(--hover); color: var(--text); }
+.outline-button.active { background: var(--accent-soft); color: var(--accent); }
 .side-bottom { border-top: 1px solid var(--border); margin: 0 14px; padding: 13px 0 12px; display: flex; align-items: center; justify-content: space-between; font-size: 10px; color: var(--muted); }
 .offline-dot { width: 5px; height: 5px; background: #6d9271; border-radius: 50%; display: inline-block; margin-right: 6px; }
 .side-bottom .icon-btn { width: 25px; height: 25px; }
